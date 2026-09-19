@@ -22,7 +22,7 @@ institution_api_key = st.sidebar.text_input(
     type="password",
 )
 api_endpoint = st.sidebar.text_input(
-    "FastAPI Gateway URL", value="http://127.0.0.1:8000/v1/evaluate-fraud"
+    "FastAPI Gateway URL", value="https://fraud-detection-engine-v5wj.onrender.com/v1/evaluate-fraud"
 )
 
 tab1, tab2 = st.tabs(
