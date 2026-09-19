@@ -75,14 +75,17 @@ with tab1:
       response = requests.post(api_endpoint, json=payload, headers=headers)
       if response.status_code == 200:
         res_data = response.json()
-        prob = res_data["fraud_probability"]
-        action = res_data["action"]
+        
+        # Safely extract fields with fallbacks to prevent KeyErrors
+        prob = res_data.get("fraud_probability", 0.0)
+        action = res_data.get("action", res_data.get("decision", "REVIEW"))
+        institution = res_data.get("evaluated_for_institution", "Default Institution")
 
         st.markdown("---")
         st.subheader("Evaluation Results")
         mcol1, mcol2, mcol3 = st.columns(3)
         mcol1.metric("Fraud Probability", f"{prob * 100:.2f}%")
-        mcol2.metric("Evaluated Institution", res_data["evaluated_for_institution"])
+        mcol2.metric("Evaluated Institution", institution)
 
         if action == "BLOCK":
           mcol3.error(f"Decision: {action}")
@@ -90,6 +93,10 @@ with tab1:
           mcol3.warning(f"Decision: {action}")
         else:
           mcol3.success(f"Decision: {action}")
+
+        # Optional: Print raw response to debug if any other fields are missing
+        with st.expander("View Raw API Response"):
+            st.json(res_data)
 
       else:
         st.error(f"API Error [{response.status_code}]: {response.text}")
