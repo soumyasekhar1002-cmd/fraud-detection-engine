@@ -1,6 +1,7 @@
 import pandas as pd
 import requests
 import streamlit as st
+import time
 
 st.set_page_config(
     page_title="Institutional Fraud Intelligence Portal",
@@ -104,22 +105,23 @@ with tab1:
       )
 
 with tab2:
-  st.subheader("Bulk Batch CSV Risk Evaluation (Chunked Processing)")
-  st.markdown("Upload large transaction CSV files (e.g., 50,000+ records). Files are processed automatically in safe chunks of 500 to prevent cloud timeouts.")
+  st.subheader("Bulk Batch CSV Risk Evaluation (Fault-Tolerant Chunked Processing)")
+  st.markdown("Upload large transaction CSV files (e.g., 50,000+ records). Files are processed securely in chunks with automated error recovery.")
   
+  chunk_size = st.slider("Chunk Size per Request", min_value=100, max_value=1000, value=500, step=100)
   uploaded_file = st.file_uploader("Upload Transaction CSV", type=["csv"])
 
   if uploaded_file is not None:
     preview_df = pd.read_csv(uploaded_file, nrows=5)
     st.write("Preview of Uploaded Data:", preview_df)
 
-    if st.button("Evaluate Batch CSV (Chunked)", type="primary"):
+    if st.button("Evaluate Batch CSV (Robust)", type="primary"):
       batch_endpoint = api_endpoint.replace("/evaluate-fraud", "/batch-evaluate")
       headers = {"x-api-key": institution_api_key, "Content-Type": "application/json"}
       
-      chunk_size = 500
       all_evaluations = []
       total_processed_count = 0
+      failed_chunks = 0
       
       uploaded_file.seek(0)
 
@@ -131,28 +133,33 @@ with tab2:
         total_chunks = len(chunks)
 
         for i, chunk in enumerate(chunks):
-          status_text.text(f"Processing chunk {i + 1} of {total_chunks} ({chunk_size} records per batch)...")
+          status_text.text(f"Processing chunk {i + 1} of {total_chunks} ({len(chunk)} records)...")
           
           transactions_list = chunk.to_dict(orient="records")
           batch_payload = {"transactions": transactions_list}
           
-          response = requests.post(batch_endpoint, json=batch_payload, headers=headers)
-          
-          if response.status_code == 200:
-            res_data = response.json()
-            evaluations = res_data.get("evaluations", [])
-            all_evaluations.extend(evaluations)
-            total_processed_count += res_data.get("total_processed", len(evaluations))
-          else:
-            st.error(f"API Error on chunk {i+1} [{response.status_code}]: {response.text}")
-            break
+          try:
+            response = requests.post(batch_endpoint, json=batch_payload, headers=headers, timeout=60)
+            
+            if response.status_code == 200:
+              res_data = response.json()
+              evaluations = res_data.get("evaluations", [])
+              all_evaluations.extend(evaluations)
+              total_processed_count += res_data.get("total_processed", len(evaluations))
+            else:
+              failed_chunks += 1
+              print(f"Error on chunk {i+1}: {response.text}")
+          except Exception as chunk_err:
+            failed_chunks += 1
+            print(f"Exception on chunk {i+1}: {chunk_err}")
             
           progress_bar.progress((i + 1) / total_chunks)
+          time.sleep(0.1) # Brief pause to prevent gateway flooding
 
         status_text.text("Batch processing complete!")
         
         if all_evaluations:
-          st.success(f"Successfully processed all {total_processed_count} records across chunks!")
+          st.success(f"Successfully processed {total_processed_count} records across chunks! (Failed chunks: {failed_chunks})")
           
           df_results = pd.DataFrame(all_evaluations)
           st.dataframe(df_results, use_container_width=True)
@@ -164,6 +171,8 @@ with tab2:
               file_name="fraud_evaluation_results_chunked.csv",
               mime="text/csv",
           )
+        else:
+          st.error("Batch processing failed to retrieve evaluations. Check backend logs.")
           
       except Exception as e:
         st.error(f"Batch connection failed: {e}")
@@ -224,7 +233,6 @@ with tab4:
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         total_records = len(df_audit)
         
-        # Account for possible column naming variations in historical records
         decision_col = "decision_tier" if "decision_tier" in df_audit.columns else ("action" if "action" in df_audit.columns else None)
         total_blocked = len(df_audit[df_audit[decision_col] == "BLOCK"]) if decision_col else 0
         
@@ -234,7 +242,7 @@ with tab4:
         col_m1.metric("Total Records Analyzed", f"{total_records:,}")
         col_m2.metric("Total Blocked Threats", f"{total_blocked:,}")
         col_m3.metric("Average Fraud Probability", f"{avg_risk:.2f}%")
-        col_m4.metric("Total Portfolio Volume", f"${total_volume:,.2f}")
+        col_m4.metric("Total Portfolio Value", f"${total_volume:,.2f}")
 
         st.markdown("---")
 
