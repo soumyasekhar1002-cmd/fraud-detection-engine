@@ -11,10 +11,9 @@ st.set_page_config(
 )
 
 # --- OAUTH CONFIGURATION ---
-# Replace these with your actual OAuth Client IDs from Google Cloud Console & GitHub Developer Settings
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "YOUR_GITHUB_CLIENT_ID")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID")
-REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8501") # Update to your deployed Streamlit URL in production
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8501")
 
 # --- SESSION STATE INITIALIZATION ---
 if "authenticated" not in st.session_state:
@@ -32,7 +31,6 @@ if "code" in query_params and not st.session_state["authenticated"]:
     code = query_params["code"]
     provider = query_params.get("provider", "github")
     
-    # Exchange code for user token/info (Mocked exchange for demonstration, replace with requests.post to token endpoint)
     if provider == "github":
         st.session_state["authenticated"] = True
         st.session_state["user_email"] = "github_verified_user@company.com"
@@ -120,7 +118,6 @@ if not st.session_state["authenticated"]:
                 st.markdown(f'<p style="text-align:center;"><a href="{github_auth_url}" target="_self" style="text-decoration:none;"><button style="width:100%; padding:8px; background-color:#24292e; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">🐙 GitHub</button></a></p>', unsafe_allow_html=True)
                 
             with sso_col3:
-                # Apple Sign In uses REST/JS flow; configured as secure redirect button
                 apple_auth_url = f"https://appleid.apple.com/auth/authorize?client_id=com.fraudengine.web&redirect_uri={REDIRECT_URI}&response_type=code&response_mode=form_post"
                 st.markdown(f'<p style="text-align:center;"><a href="{apple_auth_url}" target="_self" style="text-decoration:none;"><button style="width:100%; padding:8px; background-color:#000000; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">🍎 Apple</button></a></p>', unsafe_allow_html=True)
 
@@ -144,9 +141,6 @@ if not st.session_state["authenticated"]:
                             "is_admin": False
                         }
                         st.success("Account created successfully! Switch to 'Sign In' to log in.")
-        
-        st.markdown("---")
-        st.info("🔐 **Your Master Admin Credential:**\n* **Email:** `soumya.admin@fraudengine.com`\n* **Password:** `AdminSecure2026!`")
 
     st.stop()  # Halt execution until authenticated
 
