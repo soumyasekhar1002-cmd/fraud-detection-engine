@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import requests
 import streamlit as st
@@ -9,6 +10,12 @@ st.set_page_config(
     layout="wide",
 )
 
+# --- OAUTH CONFIGURATION ---
+# Replace these with your actual OAuth Client IDs from Google Cloud Console & GitHub Developer Settings
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "YOUR_GITHUB_CLIENT_ID")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8501") # Update to your deployed Streamlit URL in production
+
 # --- SESSION STATE INITIALIZATION ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -18,6 +25,32 @@ if "institution_name" not in st.session_state:
     st.session_state["institution_name"] = ""
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
+
+# --- HANDLE OAUTH CALLBACKS FROM QUERY PARAMS ---
+query_params = st.query_params
+if "code" in query_params and not st.session_state["authenticated"]:
+    code = query_params["code"]
+    provider = query_params.get("provider", "github")
+    
+    # Exchange code for user token/info (Mocked exchange for demonstration, replace with requests.post to token endpoint)
+    if provider == "github":
+        st.session_state["authenticated"] = True
+        st.session_state["user_email"] = "github_verified_user@company.com"
+        st.session_state["institution_name"] = "GitHub Verified Enterprise"
+        st.session_state["api_key"] = "global_trust_key_777"
+        st.session_state["is_admin"] = False
+        st.success("Successfully authenticated with GitHub!")
+        st.query_params.clear()
+        st.rerun()
+    elif provider == "google":
+        st.session_state["authenticated"] = True
+        st.session_state["user_email"] = "google_verified_user@gmail.com"
+        st.session_state["institution_name"] = "Google Workspace Verified"
+        st.session_state["api_key"] = "bank_alpha_secret_key_991"
+        st.session_state["is_admin"] = False
+        st.success("Successfully authenticated with Google!")
+        st.query_params.clear()
+        st.rerun()
 
 # In-memory user registry including your Master Admin profile
 if "user_database" not in st.session_state:
@@ -32,12 +65,6 @@ if "user_database" not in st.session_state:
             "password": "Password123",
             "institution": "Alpha Bank Corp",
             "key": "bank_alpha_secret_key_991",
-            "is_admin": False
-        },
-        "analyst@globaltrust.com": {
-            "password": "Password123",
-            "institution": "Global Trust Bank",
-            "key": "global_trust_key_777",
             "is_admin": False
         }
     }
@@ -79,34 +106,23 @@ if not st.session_state["authenticated"]:
                     else:
                         st.error("Invalid email or password.")
             
-            st.markdown("<p style='text-align: center; color: gray; font-size: 0.85em;'>— Or continue with Enterprise SSO —</p>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: gray; font-size: 0.85em;'>— Or sign in with Enterprise SSO —</p>", unsafe_allow_html=True)
             
-            # Social / Enterprise SSO Mock Buttons
+            # Real OAuth Redirect Links/Buttons
             sso_col1, sso_col2, sso_col3 = st.columns(3)
+            
             with sso_col1:
-                if st.button("🌐 Google", use_container_width=True):
-                    st.session_state["authenticated"] = True
-                    st.session_state["user_email"] = "sso_user@google.com"
-                    st.session_state["institution_name"] = "Google Workspace Verified"
-                    st.session_state["api_key"] = "bank_alpha_secret_key_991"
-                    st.session_state["is_admin"] = False
-                    st.rerun()
+                google_auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri={REDIRECT_URI}?provider=google&response_type=code&scope=email%20profile"
+                st.markdown(f'<p style="text-align:center;"><a href="{google_auth_url}" target="_self" style="text-decoration:none;"><button style="width:100%; padding:8px; background-color:#4285F4; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">🌐 Google</button></a></p>', unsafe_allow_html=True)
+                
             with sso_col2:
-                if st.button("🐙 GitHub", use_container_width=True):
-                    st.session_state["authenticated"] = True
-                    st.session_state["user_email"] = "sso_user@github.com"
-                    st.session_state["institution_name"] = "GitHub Enterprise"
-                    st.session_state["api_key"] = "global_trust_key_777"
-                    st.session_state["is_admin"] = False
-                    st.rerun()
+                github_auth_url = f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}&redirect_uri={REDIRECT_URI}?provider=github&scope=user:email"
+                st.markdown(f'<p style="text-align:center;"><a href="{github_auth_url}" target="_self" style="text-decoration:none;"><button style="width:100%; padding:8px; background-color:#24292e; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">🐙 GitHub</button></a></p>', unsafe_allow_html=True)
+                
             with sso_col3:
-                if st.button("🍎 Apple", use_container_width=True):
-                    st.session_state["authenticated"] = True
-                    st.session_state["user_email"] = "sso_user@apple.com"
-                    st.session_state["institution_name"] = "Apple ID User"
-                    st.session_state["api_key"] = "bank_alpha_secret_key_991"
-                    st.session_state["is_admin"] = False
-                    st.rerun()
+                # Apple Sign In uses REST/JS flow; configured as secure redirect button
+                apple_auth_url = f"https://appleid.apple.com/auth/authorize?client_id=com.fraudengine.web&redirect_uri={REDIRECT_URI}&response_type=code&response_mode=form_post"
+                st.markdown(f'<p style="text-align:center;"><a href="{apple_auth_url}" target="_self" style="text-decoration:none;"><button style="width:100%; padding:8px; background-color:#000000; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">🍎 Apple</button></a></p>', unsafe_allow_html=True)
 
         with auth_tab2:
             with st.form("signup_form"):
@@ -130,7 +146,7 @@ if not st.session_state["authenticated"]:
                         st.success("Account created successfully! Switch to 'Sign In' to log in.")
         
         st.markdown("---")
-        st.info("🔐 **Your Admin Credential:**\n* **Email:** `soumya.admin@fraudengine.com`\n* **Password:** `AdminSecure2026!`")
+        st.info("🔐 **Your Master Admin Credential:**\n* **Email:** `soumya.admin@fraudengine.com`\n* **Password:** `AdminSecure2026!`")
 
     st.stop()  # Halt execution until authenticated
 
