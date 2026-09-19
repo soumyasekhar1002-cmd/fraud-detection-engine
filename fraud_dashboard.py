@@ -9,65 +9,152 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- SESSION STATE INITIALIZATION FOR AUTHENTICATION ---
+# --- SESSION STATE INITIALIZATION ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
+if "user_email" not in st.session_state:
+    st.session_state["user_email"] = ""
 if "institution_name" not in st.session_state:
     st.session_state["institution_name"] = ""
-if "api_key" not in st.session_state:
-    st.session_state["api_key"] = ""
+if "is_admin" not in st.session_state:
+    st.session_state["is_admin"] = False
 
-# Valid institutional API keys mapping
-VALID_INSTITUTIONS = {
-    "bank_alpha_secret_key_991": "Alpha Bank Corp",
-    "global_trust_key_777": "Global Trust Bank"
-}
+# In-memory user registry including your Master Admin profile
+if "user_database" not in st.session_state:
+    st.session_state["user_database"] = {
+        "soumya.admin@fraudengine.com": {
+            "password": "AdminSecure2026!",
+            "institution": "System Administrator (Global Oversight)",
+            "key": "bank_alpha_secret_key_991",
+            "is_admin": True
+        },
+        "admin@alphabank.com": {
+            "password": "Password123",
+            "institution": "Alpha Bank Corp",
+            "key": "bank_alpha_secret_key_991",
+            "is_admin": False
+        },
+        "analyst@globaltrust.com": {
+            "password": "Password123",
+            "institution": "Global Trust Bank",
+            "key": "global_trust_key_777",
+            "is_admin": False
+        }
+    }
 
-# --- LOGIN SCREEN GATEKEEPER ---
+# --- SECURE LOGIN / SIGNUP GATEKEEPER ---
 if not st.session_state["authenticated"]:
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 2, 1])
+    st.markdown("<br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.2, 1])
     
     with col2:
-        st.markdown("<h1 style='text-align: center;'>🛡️ Secure Portal Login</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: gray;'>Institutional Fraud Detection & Audit Gateway</p>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center;'>🛡️ Secure Portal Access</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: gray;'>Enterprise Fraud Detection & Regulatory Audit Gateway</p>", unsafe_allow_html=True)
         
-        with st.form("login_form"):
-            input_key = st.text_input("Institutional API Key (`x-api-key`)", type="password")
-            submit_login = st.form_submit_button("Authenticate Access", use_container_width=True)
+        # Auth Tabs (Sign In vs Register)
+        auth_tab1, auth_tab2 = st.tabs(["🔑 Sign In", "📝 Register Account"])
+        
+        with auth_tab1:
+            with st.form("signin_form"):
+                email_input = st.text_input("Corporate, Personal, or Admin Email", placeholder="you@company.com")
+                password_input = st.text_input("Password", type="password")
+                submit_signin = st.form_submit_button("Sign In", use_container_width=True)
+                
+                if submit_signin:
+                    db = st.session_state["user_database"]
+                    if email_input in db and db[email_input]["password"] == password_input:
+                        st.session_state["authenticated"] = True
+                        st.session_state["user_email"] = email_input
+                        st.session_state["institution_name"] = db[email_input]["institution"]
+                        st.session_state["api_key"] = db[email_input]["key"]
+                        st.session_state["is_admin"] = db[email_input].get("is_admin", False)
+                        
+                        if st.session_state["is_admin"]:
+                            st.success(f"Welcome back, Master Admin ({email_input})!")
+                        else:
+                            st.success(f"Welcome back, {email_input}!")
+                            
+                        time.sleep(0.6)
+                        st.rerun()
+                    else:
+                        st.error("Invalid email or password.")
             
-            if submit_login:
-                if input_key in VALID_INSTITUTIONS:
+            st.markdown("<p style='text-align: center; color: gray; font-size: 0.85em;'>— Or continue with Enterprise SSO —</p>", unsafe_allow_html=True)
+            
+            # Social / Enterprise SSO Mock Buttons
+            sso_col1, sso_col2, sso_col3 = st.columns(3)
+            with sso_col1:
+                if st.button("🌐 Google", use_container_width=True):
                     st.session_state["authenticated"] = True
-                    st.session_state["institution_name"] = VALID_INSTITUTIONS[input_key]
-                    st.session_state["api_key"] = input_key
-                    st.success(f"Successfully authenticated as {VALID_INSTITUTIONS[input_key]}!")
-                    time.sleep(0.8)
+                    st.session_state["user_email"] = "sso_user@google.com"
+                    st.session_state["institution_name"] = "Google Workspace Verified"
+                    st.session_state["api_key"] = "bank_alpha_secret_key_991"
+                    st.session_state["is_admin"] = False
                     st.rerun()
-                else:
-                    st.error("Invalid API Key. Access Denied.")
+            with sso_col2:
+                if st.button("🐙 GitHub", use_container_width=True):
+                    st.session_state["authenticated"] = True
+                    st.session_state["user_email"] = "sso_user@github.com"
+                    st.session_state["institution_name"] = "GitHub Enterprise"
+                    st.session_state["api_key"] = "global_trust_key_777"
+                    st.session_state["is_admin"] = False
+                    st.rerun()
+            with sso_col3:
+                if st.button("🍎 Apple", use_container_width=True):
+                    st.session_state["authenticated"] = True
+                    st.session_state["user_email"] = "sso_user@apple.com"
+                    st.session_state["institution_name"] = "Apple ID User"
+                    st.session_state["api_key"] = "bank_alpha_secret_key_991"
+                    st.session_state["is_admin"] = False
+                    st.rerun()
+
+        with auth_tab2:
+            with st.form("signup_form"):
+                new_email = st.text_input("Work Email Address", placeholder="you@company.com")
+                new_institution = st.text_input("Institution / Company Name", placeholder="Acme Financial")
+                new_password = st.text_input("Create Password", type="password")
+                submit_signup = st.form_submit_button("Create Account", use_container_width=True)
+                
+                if submit_signup:
+                    if not new_email or not new_password or not new_institution:
+                        st.warning("Please fill out all fields.")
+                    elif new_email in st.session_state["user_database"]:
+                        st.error("An account with this email already exists. Please sign in.")
+                    else:
+                        st.session_state["user_database"][new_email] = {
+                            "password": new_password,
+                            "institution": new_institution,
+                            "key": "bank_alpha_secret_key_991",
+                            "is_admin": False
+                        }
+                        st.success("Account created successfully! Switch to 'Sign In' to log in.")
         
-        st.info("ℹ️ **Demo Keys for Testing:**\n* `bank_alpha_secret_key_991`\n* `global_trust_key_777`")
-    
-    st.stop()  # Halt execution of the rest of the app until authenticated
+        st.markdown("---")
+        st.info("🔐 **Your Admin Credential:**\n* **Email:** `soumya.admin@fraudengine.com`\n* **Password:** `AdminSecure2026!`")
 
-# --- MAIN DASHBOARD (GATED BEHIND LOGIN) ---
+    st.stop()  # Halt execution until authenticated
+
+# --- MAIN DASHBOARD (GATED BEHIND AUTHENTICATION) ---
+role_badge = "👑 [MASTER ADMIN]" if st.session_state["is_admin"] else "👤 [ANALYST]"
 st.title("🛡️ Institutional Real-Time Fraud Detection Portal")
-st.markdown(f"Enterprise-grade transaction risk scoring and regulatory audit viewer. | **Logged in as:** `{st.session_state['institution_name']}`")
+st.markdown(f"Enterprise risk scoring and audit gateway. | **Signed in as:** `{st.session_state['user_email']}` {role_badge} ({st.session_state['institution_name']})")
 
-# Sidebar for Session Controls
+# Sidebar Session Controls
 st.sidebar.header("🔐 Session Management")
+st.sidebar.write(f"**User:** {st.session_state['user_email']}")
+st.sidebar.write(f"**Role:** {'Master Administrator' if st.session_state['is_admin'] else 'Standard Analyst'}")
 st.sidebar.write(f"**Institution:** {st.session_state['institution_name']}")
-if st.sidebar.button("🔒 Logout", use_container_width=True):
+
+if st.sidebar.button("🔒 Sign Out", use_container_width=True):
     st.session_state["authenticated"] = False
+    st.session_state["user_email"] = ""
     st.session_state["institution_name"] = ""
-    st.session_state["api_key"] = ""
+    st.session_state["is_admin"] = False
     st.rerun()
 
 api_endpoint = st.sidebar.text_input(
     "FastAPI Gateway URL", value="https://fraud-detection-engine-v5wj.onrender.com/v1/evaluate-fraud"
 )
-
 institution_api_key = st.session_state["api_key"]
 
 # Define 4 distinct functional tabs
@@ -124,7 +211,7 @@ with tab1:
         
         prob = res_data.get("fraud_probability", 0.0)
         action = res_data.get("decision", res_data.get("action", "REVIEW"))
-        institution = res_data.get("evaluated_institution", res_data.get("evaluated_for_institution", "Default Institution"))
+        institution = res_data.get("evaluated_institution", res_data.get("evaluated_for_institution", st.session_state['institution_name']))
 
         st.markdown("---")
         st.subheader("Evaluation Results")
