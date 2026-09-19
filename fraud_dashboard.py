@@ -76,10 +76,10 @@ with tab1:
       if response.status_code == 200:
         res_data = response.json()
         
-        # Safely extract fields with fallbacks to prevent KeyErrors
+        # Safely extract fields matching exact FastAPI schema priorities
         prob = res_data.get("fraud_probability", 0.0)
-        action = res_data.get("action", res_data.get("decision", "REVIEW"))
-        institution = res_data.get("evaluated_for_institution", "Default Institution")
+        action = res_data.get("decision", res_data.get("action", "REVIEW"))
+        institution = res_data.get("evaluated_institution", res_data.get("evaluated_for_institution", "Default Institution"))
 
         st.markdown("---")
         st.subheader("Evaluation Results")
