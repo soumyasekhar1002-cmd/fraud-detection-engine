@@ -102,6 +102,44 @@ with tab1:
           f"Connection failed: Could not reach backend server. Error: {e}"
       )
 
+  st.markdown("---")
+  st.subheader("📂 Batch CSV Risk Evaluation")
+  uploaded_file = st.file_uploader("Upload Transaction CSV", type=["csv"])
+
+  if uploaded_file is not None:
+    df_input = pd.read_csv(uploaded_file)
+    st.write("Preview of Uploaded Data:", df_input.head())
+
+    if st.button("Evaluate Batch CSV", type="primary"):
+      transactions_list = df_input.to_dict(orient="records")
+      batch_payload = {"transactions": transactions_list}
+      
+      batch_endpoint = api_endpoint.replace("/evaluate-fraud", "/batch-evaluate")
+      headers = {"x-api-key": institution_api_key, "Content-Type": "application/json"}
+
+      try:
+        response = requests.post(batch_endpoint, json=batch_payload, headers=headers)
+        if response.status_code == 200:
+          res_data = response.json()
+          evaluations = res_data.get("evaluations", [])
+          
+          st.success(f"Successfully processed {res_data.get('total_processed')} transactions for {res_data.get('evaluated_institution')}")
+          
+          df_results = pd.DataFrame(evaluations)
+          st.dataframe(df_results, use_container_width=True)
+          
+          csv_export = df_results.to_csv(index=False).encode('utf-8')
+          st.download_button(
+              label="Download Evaluation Results CSV",
+              data=csv_export,
+              file_name="fraud_evaluation_results.csv",
+              mime="text/csv",
+          )
+        else:
+          st.error(f"API Error [{response.status_code}]: {response.text}")
+      except Exception as e:
+        st.error(f"Connection failed: {e}")
+
 with tab2:
   st.subheader("Immutable Regulatory Audit Trail")
   st.markdown(
