@@ -24,12 +24,13 @@ api_endpoint = st.sidebar.text_input(
     "FastAPI Gateway URL", value="https://fraud-detection-engine-v5wj.onrender.com/v1/evaluate-fraud"
 )
 
-tab1, tab2 = st.tabs(
-    ["🚀 Live Transaction Scoring", "📊 Regulatory Audit Logs"]
+# Define 3 distinct functional tabs
+tab1, tab2, tab3 = st.tabs(
+    ["🚀 Live Transaction Scoring", "📂 Batch CSV Evaluation", "📊 Regulatory Audit Logs"]
 )
 
 with tab1:
-  st.subheader("Transaction Risk Evaluation Form")
+  st.subheader("Single Transaction Risk Evaluation Form")
 
   col1, col2 = st.columns(2)
   with col1:
@@ -102,13 +103,15 @@ with tab1:
           f"Connection failed: Could not reach backend server. Error: {e}"
       )
 
-  st.markdown("---")
-  st.subheader("📂 Batch CSV Risk Evaluation")
+with tab2:
+  st.subheader("Bulk Batch CSV Risk Evaluation")
+  st.markdown("Upload a CSV file containing multiple transactions (e.g., your 500+ record dataset) to process them concurrently.")
+  
   uploaded_file = st.file_uploader("Upload Transaction CSV", type=["csv"])
 
   if uploaded_file is not None:
     df_input = pd.read_csv(uploaded_file)
-    st.write("Preview of Uploaded Data:", df_input.head())
+    st.write(f"Preview of Uploaded Data ({len(df_input)} total records loaded):", df_input.head())
 
     if st.button("Evaluate Batch CSV", type="primary"):
       transactions_list = df_input.to_dict(orient="records")
@@ -118,7 +121,9 @@ with tab1:
       headers = {"x-api-key": institution_api_key, "Content-Type": "application/json"}
 
       try:
-        response = requests.post(batch_endpoint, json=batch_payload, headers=headers)
+        with st.spinner("Processing batch evaluation through Render gateway..."):
+          response = requests.post(batch_endpoint, json=batch_payload, headers=headers)
+          
         if response.status_code == 200:
           res_data = response.json()
           evaluations = res_data.get("evaluations", [])
@@ -140,7 +145,7 @@ with tab1:
       except Exception as e:
         st.error(f"Connection failed: {e}")
 
-with tab2:
+with tab3:
   st.subheader("Immutable Regulatory Audit Trail")
   st.markdown(
       "Real-time view of historical decisions fetched securely from the Render cloud backend."
