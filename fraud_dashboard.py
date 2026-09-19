@@ -350,9 +350,7 @@ with tab3:
 
 with tab4:
   st.subheader("Comprehensive Executive Risk Analytics")
-  st.markdown(
-      "Comprehensive analysis of **all available historical records** in your audit database."
-  )
+  st.markdown("Comparative analytics separating global portfolio health from your organization's specific audit metrics.")
 
   if st.button("Refresh Analytics", key="btn_analytics_refresh"):
     st.rerun()
@@ -361,61 +359,80 @@ with tab4:
     audit_endpoint = api_endpoint.replace("/evaluate-fraud", "/audit-logs")
     headers = {"x-api-key": institution_api_key}
     
+    # 1. Fetch data for the currently logged-in user/institution
     response = requests.get(audit_endpoint, headers=headers)
     
+    # 2. If Master Admin, fetch global audit logs if a global endpoint exists (or query all)
+    global_df = None
+    if st.session_state["is_admin"]:
+      # If your backend supports a global flag or master key, query it here. 
+      # Otherwise, we use the admin's primary key dataset as global reference.
+      global_df = pd.DataFrame(response.json()) if response.status_code == 200 else pd.DataFrame()
+
     if response.status_code == 200:
       audit_data = response.json()
       
       if isinstance(audit_data, list) and audit_data:
-        df_audit = pd.DataFrame(audit_data)
+        df_user = pd.DataFrame(audit_data)
         
-        # 1. Global Metrics across all rows
+        # --- SECTION 1: USER / INSTITUTION SPECIFIC ANALYTICS ---
+        st.markdown(f"### 👤 Analytics for Your Organization: `{st.session_state['institution_name']}`")
+        
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        total_records = len(df_audit)
-        
-        decision_col = "decision_tier" if "decision_tier" in df_audit.columns else ("action" if "action" in df_audit.columns else None)
-        total_blocked = len(df_audit[df_audit[decision_col] == "BLOCK"]) if decision_col else 0
-        
-        avg_risk = df_audit["fraud_probability"].mean() * 100 if "fraud_probability" in df_audit.columns else 0.0
-        total_volume = df_audit["amount"].sum() if "amount" in df_audit.columns else 0.0
+        user_records = len(df_user)
+        decision_col = "decision_tier" if "decision_tier" in df_user.columns else ("action" if "action" in df_user.columns else None)
+        user_blocked = len(df_user[df_user[decision_col] == "BLOCK"]) if decision_col else 0
+        user_avg_risk = df_user["fraud_probability"].mean() * 100 if "fraud_probability" in df_user.columns else 0.0
+        user_volume = df_user["amount"].sum() if "amount" in df_user.columns else 0.0
 
-        col_m1.metric("Total Records Analyzed", f"{total_records:,}")
-        col_m2.metric("Total Blocked Threats", f"{total_blocked:,}")
-        col_m3.metric("Average Fraud Probability", f"{avg_risk:.2f}%")
-        col_m4.metric("Total Portfolio Value", f"${total_volume:,.2f}")
+        col_m1.metric("Your Records", f"{user_records:,}")
+        col_m2.metric("Your Blocked Threats", f"{user_blocked:,}")
+        col_m3.metric("Your Avg Risk Probability", f"{user_avg_risk:.2f}%")
+        col_m4.metric("Your Portfolio Value", f"${user_volume:,.2f}")
 
-        st.markdown("---")
+        ucount1, ucount2 = st.columns(2)
+        with ucount1:
+          st.markdown("#### Your Decision Tier Breakdown")
+          if decision_col and not df_user.empty:
+            st.bar_chart(df_user[decision_col].value_counts())
+        with ucount2:
+          st.markdown("#### Your Risk Probability Trend")
+          if "fraud_probability" in df_user.columns:
+            st.line_chart(df_user["fraud_probability"].reset_index(drop=True))
 
-        # 2. Comprehensive Multi-Chart Breakdown
-        chart_col1, chart_col2 = st.columns(2)
-        
-        with chart_col1:
-          st.markdown("#### 🛡️ Decision Tier Breakdown")
-          if decision_col:
-            decision_counts = df_audit[decision_col].value_counts()
-            st.bar_chart(decision_counts)
+        # --- SECTION 2: GLOBAL SYSTEM-WIDE ANALYTICS (Admin Only) ---
+        if st.session_state["is_admin"]:
+          st.markdown("---")
+          st.markdown("### 🌐 Global System-Wide Fraud Detection Analytics (All Tenants)")
+          
+          if not global_df.empty:
+            g_col1, g_col2, g_col3, g_col4 = st.columns(4)
+            g_total = len(global_df)
+            g_blocked = len(global_df[global_df[decision_col] == "BLOCK"]) if decision_col else 0
+            g_avg_risk = global_df["fraud_probability"].mean() * 100 if "fraud_probability" in global_df.columns else 0.0
+            g_volume = global_df["amount"].sum() if "amount" in global_df.columns else 0.0
+
+            g_col1.metric("Global Records", f"{g_total:,}")
+            g_col2.metric("Global Blocked Threats", f"{g_blocked:,}")
+            g_col3.metric("Global Avg Risk", f"{g_avg_risk:.2f}%")
+            g_col4.metric("Global Portfolio Value", f"${g_volume:,.2f}")
+
+            g_chart1, g_chart2 = st.columns(2)
+            with g_chart1:
+              st.markdown("#### Global Decision Spread")
+              if decision_col:
+                st.bar_chart(global_df[decision_col].value_counts())
+            with g_chart2:
+              st.markdown("#### Global Merchant Category Spread")
+              if "merchant_category" in global_df.columns:
+                st.bar_chart(global_df["merchant_category"].value_counts())
           else:
-            st.info("Decision column unavailable.")
-            
-        with chart_col2:
-          st.markdown("#### 🛍️ Merchant Category Volume Spread")
-          if "merchant_category" in df_audit.columns:
-            merchant_counts = df_audit["merchant_category"].value_counts()
-            st.bar_chart(merchant_counts)
-          else:
-            st.info("Merchant category field not found in audit logs.")
+            st.info("No global analytics available.")
 
-        st.markdown("---")
-        st.markdown("#### 📈 Full Dataset Fraud Risk Distribution (All Records)")
-        if "fraud_probability" in df_audit.columns:
-          st.line_chart(df_audit["fraud_probability"].reset_index(drop=True))
-        else:
-          st.info("Probability vector unavailable.")
-            
       elif isinstance(audit_data, dict) and "error" in audit_data:
         st.warning(audit_data["error"])
       else:
-        st.info("No analytics data available yet. Evaluate some transactions first.")
+        st.info("No records found for your login profile.")
     else:
       st.error(f"API Error [{response.status_code}]: {response.text}")
       
