@@ -1,0 +1,19 @@
+services:
+  fraud-api:
+    build: .
+    container_name: institutional_fraud_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+    restart: always
+
+  fraud-dashboard:
+    build: .
+    container_name: institutional_fraud_dashboard
+    ports:
+      - "8501:8501"
+    command: ["streamlit", "run", "fraud_dashboard.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    depends_on:
+      - fraud-api
+    restart: always
