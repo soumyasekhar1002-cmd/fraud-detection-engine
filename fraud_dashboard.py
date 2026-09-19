@@ -9,21 +9,66 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🛡️ Institutional Real-Time Fraud Detection Portal")
-st.markdown(
-    "Enterprise-grade transaction risk scoring and regulatory audit viewer."
-)
+# --- SESSION STATE INITIALIZATION FOR AUTHENTICATION ---
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+if "institution_name" not in st.session_state:
+    st.session_state["institution_name"] = ""
+if "api_key" not in st.session_state:
+    st.session_state["api_key"] = ""
 
-# Sidebar for Institutional Authentication
-st.sidebar.header("🔐 Institutional Access")
-institution_api_key = st.sidebar.text_input(
-    "API Key (`x-api-key`)",
-    value="bank_alpha_secret_key_991",
-    type="password",
-)
+# Valid institutional API keys mapping
+VALID_INSTITUTIONS = {
+    "bank_alpha_secret_key_991": "Alpha Bank Corp",
+    "global_trust_key_777": "Global Trust Bank"
+}
+
+# --- LOGIN SCREEN GATEKEEPER ---
+if not st.session_state["authenticated"]:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("<h1 style='text-align: center;'>🛡️ Secure Portal Login</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: gray;'>Institutional Fraud Detection & Audit Gateway</p>", unsafe_allow_html=True)
+        
+        with st.form("login_form"):
+            input_key = st.text_input("Institutional API Key (`x-api-key`)", type="password")
+            submit_login = st.form_submit_button("Authenticate Access", use_container_width=True)
+            
+            if submit_login:
+                if input_key in VALID_INSTITUTIONS:
+                    st.session_state["authenticated"] = True
+                    st.session_state["institution_name"] = VALID_INSTITUTIONS[input_key]
+                    st.session_state["api_key"] = input_key
+                    st.success(f"Successfully authenticated as {VALID_INSTITUTIONS[input_key]}!")
+                    time.sleep(0.8)
+                    st.rerun()
+                else:
+                    st.error("Invalid API Key. Access Denied.")
+        
+        st.info("ℹ️ **Demo Keys for Testing:**\n* `bank_alpha_secret_key_991`\n* `global_trust_key_777`")
+    
+    st.stop()  # Halt execution of the rest of the app until authenticated
+
+# --- MAIN DASHBOARD (GATED BEHIND LOGIN) ---
+st.title("🛡️ Institutional Real-Time Fraud Detection Portal")
+st.markdown(f"Enterprise-grade transaction risk scoring and regulatory audit viewer. | **Logged in as:** `{st.session_state['institution_name']}`")
+
+# Sidebar for Session Controls
+st.sidebar.header("🔐 Session Management")
+st.sidebar.write(f"**Institution:** {st.session_state['institution_name']}")
+if st.sidebar.button("🔒 Logout", use_container_width=True):
+    st.session_state["authenticated"] = False
+    st.session_state["institution_name"] = ""
+    st.session_state["api_key"] = ""
+    st.rerun()
+
 api_endpoint = st.sidebar.text_input(
     "FastAPI Gateway URL", value="https://fraud-detection-engine-v5wj.onrender.com/v1/evaluate-fraud"
 )
+
+institution_api_key = st.session_state["api_key"]
 
 # Define 4 distinct functional tabs
 tab1, tab2, tab3, tab4 = st.tabs(
@@ -148,13 +193,11 @@ with tab2:
               total_processed_count += res_data.get("total_processed", len(evaluations))
             else:
               failed_chunks += 1
-              print(f"Error on chunk {i+1}: {response.text}")
-          except Exception as chunk_err:
+          except Exception:
             failed_chunks += 1
-            print(f"Exception on chunk {i+1}: {chunk_err}")
             
           progress_bar.progress((i + 1) / total_chunks)
-          time.sleep(0.1) # Brief pause to prevent gateway flooding
+          time.sleep(0.1)
 
         status_text.text("Batch processing complete!")
         
