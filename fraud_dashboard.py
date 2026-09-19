@@ -1,7 +1,6 @@
 import pandas as pd
 import requests
 import streamlit as st
-import sqlite3
 
 st.set_page_config(
     page_title="Institutional Fraud Intelligence Portal",
@@ -76,7 +75,6 @@ with tab1:
       if response.status_code == 200:
         res_data = response.json()
         
-        # Safely extract fields matching exact FastAPI schema priorities
         prob = res_data.get("fraud_probability", 0.0)
         action = res_data.get("decision", res_data.get("action", "REVIEW"))
         institution = res_data.get("evaluated_institution", res_data.get("evaluated_for_institution", "Default Institution"))
@@ -94,7 +92,6 @@ with tab1:
         else:
           mcol3.success(f"Decision: {action}")
 
-        # Optional: Print raw response to debug if any other fields are missing
         with st.expander("View Raw API Response"):
             st.json(res_data)
 
@@ -108,23 +105,30 @@ with tab1:
 with tab2:
   st.subheader("Immutable Regulatory Audit Trail")
   st.markdown(
-      "Real-time view of all historical decisions logged in the SQLite audit"
-      " database."
+      "Real-time view of historical decisions fetched securely from the Render cloud backend."
   )
 
   if st.button("Refresh Audit Logs"):
-    pass
+    st.rerun()
 
   try:
-    conn = sqlite3.connect("artifacts/institutional_fraud_audit.db")
-    df_audit = pd.read_sql_query(
-        "SELECT * FROM fraud_decisions ORDER BY id DESC", conn
-    )
-    conn.close()
-
-    if not df_audit.empty:
-      st.dataframe(df_audit, use_container_width=True)
+    audit_endpoint = api_endpoint.replace("/evaluate-fraud", "/audit-logs")
+    headers = {"x-api-key": institution_api_key}
+    
+    response = requests.get(audit_endpoint, headers=headers)
+    
+    if response.status_code == 200:
+      audit_data = response.json()
+      
+      if isinstance(audit_data, list) and audit_data:
+        df_audit = pd.DataFrame(audit_data)
+        st.dataframe(df_audit, use_container_width=True)
+      elif isinstance(audit_data, dict) and "error" in audit_data:
+        st.warning(audit_data["error"])
+      else:
+        st.info("No audit logs recorded yet. Run an evaluation first.")
     else:
-      st.info("No audit logs recorded yet. Run an evaluation first.")
+      st.error(f"API Error [{response.status_code}]: {response.text}")
+      
   except Exception as e:
-    st.warning(f"Audit database not initialized yet or not found: {e}")
+    st.warning(f"Could not connect to audit gateway: {e}")

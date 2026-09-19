@@ -1,6 +1,9 @@
 import joblib
 import shap
 import pandas as pd
+import sqlite3
+import os
+import datetime
 from fastapi import FastAPI, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -10,6 +13,30 @@ app = FastAPI(
     version="2.1.0",
     description="Core engine featuring real-time evaluation, batch processing, and SHAP explainability."
 )
+
+# Initialize SQLite Audit Database
+os.makedirs("artifacts", exist_ok=True)
+DB_PATH = "artifacts/institutional_fraud_audit.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS fraud_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            institution_name TEXT,
+            transaction_id TEXT,
+            cardholder_id TEXT,
+            amount REAL,
+            fraud_probability REAL,
+            decision_tier TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # 1. Load Model & Initialize SHAP TreeExplainer
 try:
@@ -55,14 +82,11 @@ def process_risk_and_explanation(txn: TransactionPayload):
     if model and explainer:
         prob = float(model.predict_proba(df)[0][1])
         shap_vals = explainer.shap_values(df)
-        # Map feature names to their respective SHAP impact values
         explanation = dict(zip(df.columns, shap_vals[0].tolist()))
     else:
-        # Fallback sandbox behavior if .pkl is absent
         prob = 0.95 if txn.amount > 100000 or txn.velocity_1h > 3 else 0.05
         explanation = {"amount_impact": 0.45, "velocity_impact": 0.30}
 
-    # Thresholding rules
     if prob > 0.80:
         decision = "BLOCK"
     elif prob >= 0.20:
@@ -72,10 +96,32 @@ def process_risk_and_explanation(txn: TransactionPayload):
         
     return prob, decision, explanation
 
+def log_audit_decision(institution: str, txn: TransactionPayload, prob: float, decision: str):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO fraud_decisions (timestamp, institution_name, transaction_id, cardholder_id, amount, fraud_probability, decision_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            datetime.datetime.utcnow().isoformat(),
+            institution,
+            txn.transaction_id,
+            txn.cardholder_id,
+            txn.amount,
+            round(prob, 4),
+            decision
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Audit logging failed: {e}")
+
 # 4. Endpoints
 @app.post("/v1/evaluate-fraud")
 def evaluate_single(payload: TransactionPayload, institution: str = Depends(verify_api_key)):
     prob, decision, explanation = process_risk_and_explanation(payload)
+    log_audit_decision(institution, payload, prob, decision)
     
     return {
         "transaction_id": payload.transaction_id,
@@ -92,6 +138,7 @@ def evaluate_batch(payload: BatchTransactionPayload, institution: str = Depends(
     
     for txn in payload.transactions:
         prob, decision, explanation = process_risk_and_explanation(txn)
+        log_audit_decision(institution, txn, prob, decision)
         results.append({
             "transaction_id": txn.transaction_id,
             "fraud_probability": round(prob, 4),
@@ -104,3 +151,16 @@ def evaluate_batch(payload: BatchTransactionPayload, institution: str = Depends(
         "evaluated_institution": institution,
         "evaluations": results
     }
+
+@app.get("/v1/audit-logs")
+def get_audit_logs(x_api_key: str = Header(...)):
+    if x_api_key != VALID_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        df_audit = pd.read_sql_query("SELECT * FROM fraud_decisions ORDER BY id DESC LIMIT 100", conn)
+        conn.close()
+        return df_audit.to_dict(orient="records")
+    except Exception as e:
+        return {"error": f"Failed to retrieve audit logs: {str(e)}"}
