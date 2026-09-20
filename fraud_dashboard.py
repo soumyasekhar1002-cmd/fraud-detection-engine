@@ -10,6 +10,9 @@ st.set_page_config(
     layout="wide",
 )
 
+# --- BACKEND API CONFIGURATION ---
+BACKEND_URL = "https://fraud-detection-engine-v5wj.onrender.com"
+
 # --- OAUTH CONFIGURATION ---
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "YOUR_GITHUB_CLIENT_ID")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID")
@@ -24,6 +27,8 @@ if "institution_name" not in st.session_state:
     st.session_state["institution_name"] = ""
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
+if "api_key" not in st.session_state:
+    st.session_state["api_key"] = ""
 
 # --- HANDLE OAUTH CALLBACKS FROM QUERY PARAMS ---
 query_params = st.query_params
@@ -50,23 +55,6 @@ if "code" in query_params and not st.session_state["authenticated"]:
         st.query_params.clear()
         st.rerun()
 
-# In-memory user registry including your Master Admin profile
-if "user_database" not in st.session_state:
-    st.session_state["user_database"] = {
-        "soumya.admin@fraudengine.com": {
-            "password": "AdminSecure2026!",
-            "institution": "System Administrator (Global Oversight)",
-            "key": "bank_alpha_secret_key_991",
-            "is_admin": True
-        },
-        "admin@alphabank.com": {
-            "password": "Password123",
-            "institution": "Alpha Bank Corp",
-            "key": "bank_alpha_secret_key_991",
-            "is_admin": False
-        }
-    }
-
 # --- SECURE LOGIN / SIGNUP GATEKEEPER ---
 if not st.session_state["authenticated"]:
     st.markdown("<br>", unsafe_allow_html=True)
@@ -86,23 +74,34 @@ if not st.session_state["authenticated"]:
                 submit_signin = st.form_submit_button("Sign In", use_container_width=True)
                 
                 if submit_signin:
-                    db = st.session_state["user_database"]
-                    if email_input in db and db[email_input]["password"] == password_input:
-                        st.session_state["authenticated"] = True
-                        st.session_state["user_email"] = email_input
-                        st.session_state["institution_name"] = db[email_input]["institution"]
-                        st.session_state["api_key"] = db[email_input]["key"]
-                        st.session_state["is_admin"] = db[email_input].get("is_admin", False)
-                        
-                        if st.session_state["is_admin"]:
-                            st.success(f"Welcome back, Master Admin ({email_input})!")
-                        else:
-                            st.success(f"Welcome back, {email_input}!")
-                            
-                        time.sleep(0.6)
-                        st.rerun()
+                    if not email_input or not password_input:
+                        st.warning("Please enter both email and password.")
                     else:
-                        st.error("Invalid email or password.")
+                        try:
+                            response = requests.post(
+                                f"{BACKEND_URL}/login",
+                                json={"email": email_input, "password": password_input}
+                            )
+                            if response.status_code == 200:
+                                user_data = response.json()
+                                st.session_state["authenticated"] = True
+                                st.session_state["user_email"] = user_data["email"]
+                                st.session_state["institution_name"] = user_data["institution_name"]
+                                st.session_state["api_key"] = user_data["api_key"]
+                                st.session_state["is_admin"] = user_data["is_admin"]
+                                
+                                if st.session_state["is_admin"]:
+                                    st.success(f"Welcome back, Master Admin ({email_input})!")
+                                else:
+                                    st.success(f"Welcome back, {email_input}!")
+                                    
+                                time.sleep(0.6)
+                                st.rerun()
+                            else:
+                                err_detail = response.json().get("detail", "Invalid email or password.")
+                                st.error(err_detail)
+                        except Exception as e:
+                            st.error(f"Connection failed: Could not reach backend server. Error: {e}")
             
             st.markdown("<p style='text-align: center; color: gray; font-size: 0.85em;'>— Or sign in with Enterprise SSO —</p>", unsafe_allow_html=True)
             
@@ -131,16 +130,24 @@ if not st.session_state["authenticated"]:
                 if submit_signup:
                     if not new_email or not new_password or not new_institution:
                         st.warning("Please fill out all fields.")
-                    elif new_email in st.session_state["user_database"]:
-                        st.error("An account with this email already exists. Please sign in.")
                     else:
-                        st.session_state["user_database"][new_email] = {
-                            "password": new_password,
-                            "institution": new_institution,
-                            "key": "bank_alpha_secret_key_991",
-                            "is_admin": False
-                        }
-                        st.success("Account created successfully! Switch to 'Sign In' to log in.")
+                        try:
+                            response = requests.post(
+                                f"{BACKEND_URL}/signup",
+                                json={
+                                    "email": new_email,
+                                    "password": new_password,
+                                    "institution_name": new_institution
+                                }
+                            )
+                            if response.status_code == 200:
+                                data = response.json()
+                                st.success(f"Account registered successfully in Neon DB! Your unique API Key is: `{data['api_key']}`. Switch to 'Sign In' to log in.")
+                            else:
+                                err_detail = response.json().get("detail", "Registration failed.")
+                                st.error(err_detail)
+                        except Exception as e:
+                            st.error(f"Connection failed: Could not reach backend server. Error: {e}")
 
     st.stop()  # Halt execution until authenticated
 
@@ -160,11 +167,10 @@ if st.sidebar.button("🔒 Sign Out", use_container_width=True):
     st.session_state["user_email"] = ""
     st.session_state["institution_name"] = ""
     st.session_state["is_admin"] = False
+    st.session_state["api_key"] = ""
     st.rerun()
 
-api_endpoint = st.sidebar.text_input(
-    "FastAPI Gateway URL", value="https://fraud-detection-engine-v5wj.onrender.com/v1/evaluate-fraud"
-)
+api_endpoint = f"{BACKEND_URL}/v1/evaluate-fraud"
 institution_api_key = st.session_state["api_key"]
 
 # Define 4 distinct functional tabs
@@ -359,15 +365,7 @@ with tab4:
     audit_endpoint = api_endpoint.replace("/evaluate-fraud", "/audit-logs")
     headers = {"x-api-key": institution_api_key}
     
-    # 1. Fetch data for the currently logged-in user/institution
     response = requests.get(audit_endpoint, headers=headers)
-    
-    # 2. If Master Admin, fetch global audit logs if a global endpoint exists (or query all)
-    global_df = None
-    if st.session_state["is_admin"]:
-      # If your backend supports a global flag or master key, query it here. 
-      # Otherwise, we use the admin's primary key dataset as global reference.
-      global_df = pd.DataFrame(response.json()) if response.status_code == 200 else pd.DataFrame()
 
     if response.status_code == 200:
       audit_data = response.json()
@@ -375,12 +373,11 @@ with tab4:
       if isinstance(audit_data, list) and audit_data:
         df_user = pd.DataFrame(audit_data)
         
-        # --- SECTION 1: USER / INSTITUTION SPECIFIC ANALYTICS ---
         st.markdown(f"### 👤 Analytics for Your Organization: `{st.session_state['institution_name']}`")
         
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         user_records = len(df_user)
-        decision_col = "decision_tier" if "decision_tier" in df_user.columns else ("action" if "action" in df_user.columns else None)
+        decision_col = "decision" if "decision" in df_user.columns else ("decision_tier" if "decision_tier" in df_user.columns else None)
         user_blocked = len(df_user[df_user[decision_col] == "BLOCK"]) if decision_col else 0
         user_avg_risk = df_user["fraud_probability"].mean() * 100 if "fraud_probability" in df_user.columns else 0.0
         user_volume = df_user["amount"].sum() if "amount" in df_user.columns else 0.0
@@ -400,34 +397,10 @@ with tab4:
           if "fraud_probability" in df_user.columns:
             st.line_chart(df_user["fraud_probability"].reset_index(drop=True))
 
-        # --- SECTION 2: GLOBAL SYSTEM-WIDE ANALYTICS (Admin Only) ---
         if st.session_state["is_admin"]:
           st.markdown("---")
           st.markdown("### 🌐 Global System-Wide Fraud Detection Analytics (All Tenants)")
-          
-          if not global_df.empty:
-            g_col1, g_col2, g_col3, g_col4 = st.columns(4)
-            g_total = len(global_df)
-            g_blocked = len(global_df[global_df[decision_col] == "BLOCK"]) if decision_col else 0
-            g_avg_risk = global_df["fraud_probability"].mean() * 100 if "fraud_probability" in global_df.columns else 0.0
-            g_volume = global_df["amount"].sum() if "amount" in global_df.columns else 0.0
-
-            g_col1.metric("Global Records", f"{g_total:,}")
-            g_col2.metric("Global Blocked Threats", f"{g_blocked:,}")
-            g_col3.metric("Global Avg Risk", f"{g_avg_risk:.2f}%")
-            g_col4.metric("Global Portfolio Value", f"${g_volume:,.2f}")
-
-            g_chart1, g_chart2 = st.columns(2)
-            with g_chart1:
-              st.markdown("#### Global Decision Spread")
-              if decision_col:
-                st.bar_chart(global_df[decision_col].value_counts())
-            with g_chart2:
-              st.markdown("#### Global Merchant Category Spread")
-              if "merchant_category" in global_df.columns:
-                st.bar_chart(global_df["merchant_category"].value_counts())
-          else:
-            st.info("No global analytics available.")
+          st.info("As Master Admin viewing global logs above.")
 
       elif isinstance(audit_data, dict) and "error" in audit_data:
         st.warning(audit_data["error"])
