@@ -7,9 +7,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
+from passlib.context import CryptContext
 import joblib
 import shap
 import pandas as pd
+
+# --- PASSWORD HASHING SETUP ---
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
 
 # --- DATABASE SETUP (NEON POSTGRESQL) ---
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -62,8 +72,8 @@ def get_db():
 # --- FASTAPI APP INITIALIZATION ---
 app = FastAPI(
     title="Institutional Real-Time Fraud Detection Engine",
-    version="2.2.0",
-    description="Multi-tenant core engine featuring Neon PostgreSQL persistence, dynamic API keys, and RBAC."
+    version="2.3.0",
+    description="Multi-tenant core engine featuring Neon PostgreSQL persistence, dynamic API keys, and secure bcrypt password hashing."
 )
 
 # 1. Load Model & Initialize SHAP TreeExplainer
@@ -126,21 +136,33 @@ def register_user(payload: SignupSchema, db: Session = Depends(get_db)):
     # Generate a unique API key for this specific tenant/user
     unique_key = f"key_{uuid.uuid4().hex[:12]}"
     
+    # Securely hash the password using bcrypt
+    hashed_password = get_password_hash(payload.password)
+    
     new_user = UserModel(
         email=payload.email,
-        password_hash=payload.password, # Note: Production hashing recommended
+        password_hash=hashed_password,
         institution_name=payload.institution_name,
         api_key=unique_key,
         is_admin=False
     )
     db.add(new_user)
     db.commit()
-    return {"message": "User created successfully", "api_key": unique_key}
+    
+    # Return success without exposing password data
+    return {
+        "message": "User created successfully",
+        "email": payload.email,
+        "institution_name": payload.institution_name,
+        "api_key": unique_key
+    }
 
 @app.post("/login")
 def login_user(payload: LoginSchema, db: Session = Depends(get_db)):
     user = db.query(UserModel).filter(UserModel.email == payload.email).first()
-    if not user or user.password_hash != payload.password:
+    
+    # Verify email existence and check password against stored bcrypt hash safely
+    if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     return {
