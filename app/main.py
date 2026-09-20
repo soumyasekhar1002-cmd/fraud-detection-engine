@@ -11,25 +11,25 @@ import bcrypt
 import joblib
 import shap
 import pandas as pd
+import httpx
 
 # --- PASSWORD HASHING SETUP (NATIVE BCRYPT) ---
 def get_password_hash(password: str) -> str:
-    # Encode and enforce 72-byte limit safely
     pwd_bytes = password.encode('utf-8')[:72]
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not hashed_password:
+        return False
     pwd_bytes = plain_password.encode('utf-8')[:72]
     return bcrypt.checkpw(pwd_bytes, hashed_password.encode('utf-8'))
 
 # --- DATABASE SETUP (NEON POSTGRESQL) ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    # Fallback to local SQLite if DATABASE_URL environment variable isn't set locally
     DATABASE_URL = "sqlite:///./artifacts/institutional_fraud_audit.db"
 
-# Handle Neon's postgres:// prefix quirk for SQLAlchemy if present
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -37,18 +37,21 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- SQLALCHEMY MODELS ---
+# --- SQLALCHEMY MODELS (WITH VERIFICATION & RESET FIELDS) ---
 class UserModel(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True) # Nullable for OAuth users
     institution_name = Column(String(255), nullable=False)
     api_key = Column(String(255), unique=True, index=True, nullable=False)
     is_admin = Column(Boolean, default=False)
+    is_verified = Column(Boolean, default=False)
+    verification_token = Column(String(255), nullable=True)
+    reset_token = Column(String(255), nullable=True)
 
 class AuditLogModel(Base):
-    __tablename__ = "audit_logs" # Matches the Neon table created earlier
+    __tablename__ = "audit_logs"
     id = Column(Integer, primary_key=True, index=True)
     transaction_id = Column(String(100))
     cardholder_id = Column(String(100))
@@ -60,7 +63,6 @@ class AuditLogModel(Base):
     api_key = Column(String(255))
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-# Create tables if they don't exist yet
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -70,22 +72,19 @@ def get_db():
     finally:
         db.close()
 
-
 # --- FASTAPI APP INITIALIZATION ---
 app = FastAPI(
     title="Institutional Real-Time Fraud Detection Engine",
-    version="2.3.0",
-    description="Multi-tenant core engine featuring Neon PostgreSQL persistence, dynamic API keys, and secure bcrypt password hashing."
+    version="2.4.0",
+    description="Multi-tenant core engine featuring real Google OAuth, email verification, and password recovery."
 )
 
-# 1. Load Model & Initialize SHAP TreeExplainer
 try:
     model = joblib.load("fraud_model.pkl")
     explainer = shap.TreeExplainer(model)
 except Exception:
     model = None
     explainer = None
-
 
 # --- PYDANTIC SCHEMAS ---
 class SignupSchema(BaseModel):
@@ -110,35 +109,24 @@ class TransactionPayload(BaseModel):
 class BatchTransactionPayload(BaseModel):
     transactions: List[TransactionPayload]
 
-
 # --- AUTHENTICATION DEPENDENCY ---
 def verify_user_by_api_key(x_api_key: Optional[str] = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Missing institutional API key (x-api-key)."
-        )
-    
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing institutional API key (x-api-key).")
     user = db.query(UserModel).filter(UserModel.api_key == x_api_key).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid institutional API key."
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid institutional API key.")
     return user
 
-
-# --- AUTH ENDPOINTS ---
+# --- AUTH & ACCOUNT ENDPOINTS ---
 @app.post("/signup")
 def register_user(payload: SignupSchema, db: Session = Depends(get_db)):
     existing = db.query(UserModel).filter(UserModel.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Generate a unique API key for this specific tenant/user
     unique_key = f"key_{uuid.uuid4().hex[:12]}"
-    
-    # Securely hash the password using bcrypt
+    ver_token = uuid.uuid4().hex
     hashed_password = get_password_hash(payload.password)
     
     new_user = UserModel(
@@ -146,26 +134,64 @@ def register_user(payload: SignupSchema, db: Session = Depends(get_db)):
         password_hash=hashed_password,
         institution_name=payload.institution_name,
         api_key=unique_key,
-        is_admin=False
+        is_admin=False,
+        is_verified=False,
+        verification_token=ver_token
     )
     db.add(new_user)
     db.commit()
     
-    # Return success without exposing password data
     return {
-        "message": "User created successfully",
+        "message": "Account created successfully! Please verify your email.",
         "email": payload.email,
-        "institution_name": payload.institution_name,
-        "api_key": unique_key
+        "api_key": unique_key,
+        "verification_token_demo": ver_token # Returned so you can test email verification instantly
     }
+
+@app.post("/verify-email")
+def verify_email(token: str, db: Session = Depends(get_db)):
+    user = db.query(UserModel).filter(UserModel.verification_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token.")
+    
+    user.is_verified = True
+    user.verification_token = None
+    db.commit()
+    return {"message": "Email successfully verified! You can now sign in."}
+
+@app.post("/forgot-password")
+def forgot_password(email: str, db: Session = Depends(get_db)):
+    user = db.query(UserModel).filter(UserModel.email == email).first()
+    if not user:
+        return {"message": "If the email exists, a password reset token has been generated."}
+    
+    reset_tok = uuid.uuid4().hex
+    user.reset_token = reset_tok
+    db.commit()
+    return {
+        "message": "Password reset instructions generated.",
+        "reset_token_demo": reset_tok # Returned for instant testing
+    }
+
+@app.post("/reset-password")
+def reset_password(token: str, new_password: str, db: Session = Depends(get_db)):
+    user = db.query(UserModel).filter(UserModel.reset_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired password reset token.")
+    
+    user.password_hash = get_password_hash(new_password)
+    user.reset_token = None
+    db.commit()
+    return {"message": "Password updated successfully. You can now sign in."}
 
 @app.post("/login")
 def login_user(payload: LoginSchema, db: Session = Depends(get_db)):
     user = db.query(UserModel).filter(UserModel.email == payload.email).first()
-    
-    # Verify email existence and check password against stored bcrypt hash safely
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Email not verified. Please verify your account before logging in.")
     
     return {
         "email": user.email,
@@ -174,8 +200,63 @@ def login_user(payload: LoginSchema, db: Session = Depends(get_db)):
         "is_admin": user.is_admin
     }
 
+@app.post("/auth/google")
+async def google_auth_callback(code: str, db: Session = Depends(get_db)):
+    GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID")
+    GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "YOUR_GOOGLE_CLIENT_SECRET")
+    REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8501")
 
-# --- CORE LOGIC HELPERS ---
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        token_res = await client.post(token_url, data=data)
+        if token_res.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Failed to authenticate with Google: {token_res.text}")
+        
+        token_data = token_res.json()
+        access_token = token_data.get("access_token")
+
+        user_info_res = await client.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        if user_info_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch Google user profile.")
+        
+        g_user = user_info_res.json()
+        email = g_user.get("email")
+        name = g_user.get("name", "Google User")
+
+    user = db.query(UserModel).filter(UserModel.email == email).first()
+    if not user:
+        unique_key = f"key_{uuid.uuid4().hex[:12]}"
+        user = UserModel(
+            email=email,
+            password_hash=None,
+            institution_name=f"{name}'s Institution",
+            api_key=unique_key,
+            is_admin=False,
+            is_verified=True
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    return {
+        "email": user.email,
+        "institution_name": user.institution_name,
+        "api_key": user.api_key,
+        "is_admin": user.is_admin
+    }
+
+# --- CORE EVALUATION & AUDIT LOGIC ---
 def process_risk_and_explanation(txn: TransactionPayload):
     df = pd.DataFrame([{
         "amount": txn.amount,
@@ -220,13 +301,10 @@ def log_audit_decision(user: UserModel, txn: TransactionPayload, prob: float, de
         db.rollback()
         print(f"Audit logging failed: {e}")
 
-
-# --- EVALUATION ENDPOINTS ---
 @app.post("/v1/evaluate-fraud")
 def evaluate_single(payload: TransactionPayload, user: UserModel = Depends(verify_user_by_api_key), db: Session = Depends(get_db)):
     prob, decision, explanation = process_risk_and_explanation(payload)
     log_audit_decision(user, payload, prob, decision, db)
-    
     return {
         "transaction_id": payload.transaction_id,
         "fraud_probability": round(prob, 4),
@@ -239,7 +317,6 @@ def evaluate_single(payload: TransactionPayload, user: UserModel = Depends(verif
 @app.post("/v1/batch-evaluate")
 def evaluate_batch(payload: BatchTransactionPayload, user: UserModel = Depends(verify_user_by_api_key), db: Session = Depends(get_db)):
     results = []
-    
     for txn in payload.transactions:
         prob, decision, explanation = process_risk_and_explanation(txn)
         log_audit_decision(user, txn, prob, decision, db)
@@ -249,27 +326,20 @@ def evaluate_batch(payload: BatchTransactionPayload, user: UserModel = Depends(v
             "decision": decision,
             "shap_explanation": explanation
         })
-        
     return {
         "total_processed": len(results),
         "evaluated_institution": user.institution_name,
         "evaluations": results
     }
 
-# --- AUDIT LOGS ENDPOINT (WITH TENANT ISOLATION & ADMIN OVERRIDE) ---
 @app.get("/v1/audit-logs")
 def get_audit_logs(user: UserModel = Depends(verify_user_by_api_key), db: Session = Depends(get_db)):
     try:
         if user.is_admin:
-            # Master Admin sees ALL logs across every tenant globally without hard limit restrictions
             logs = db.query(AuditLogModel).order_by(AuditLogModel.id.desc()).all()
         else:
-            # Standard users see strictly their own institution's data
-            logs = db.query(AuditLogModel).filter(
-                AuditLogModel.evaluated_institution == user.institution_name
-            ).order_by(AuditLogModel.id.desc()).all()
+            logs = db.query(AuditLogModel).filter(AuditLogModel.evaluated_institution == user.institution_name).order_by(AuditLogModel.id.desc()).all()
             
-        # Convert SQLAlchemy objects to dictionaries for the frontend
         result_list = []
         for l in logs:
             result_list.append({
