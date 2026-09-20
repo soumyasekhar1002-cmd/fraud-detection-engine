@@ -162,6 +162,14 @@ st.sidebar.write(f"**User:** {st.session_state['user_email']}")
 st.sidebar.write(f"**Role:** {'Master Administrator' if st.session_state['is_admin'] else 'Standard Analyst'}")
 st.sidebar.write(f"**Institution:** {st.session_state['institution_name']}")
 
+# Master Admin Quick Sidebar Scope Toggle
+if st.session_state["is_admin"]:
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("👑 Admin Controls")
+    admin_view_mode = st.sidebar.radio("View Scope", ["Global (All Tenants)", "Single Institution"])
+else:
+    admin_view_mode = "Single Institution"
+
 if st.sidebar.button("🔒 Sign Out", use_container_width=True):
     st.session_state["authenticated"] = False
     st.session_state["user_email"] = ""
@@ -343,6 +351,14 @@ with tab3:
       
       if isinstance(audit_data, list) and audit_data:
         df_audit = pd.DataFrame(audit_data)
+        
+        # Apply admin global vs filtered scope for audit trail as well
+        if st.session_state["is_admin"] and admin_view_mode == "Single Institution":
+          all_institutions = df_audit["evaluated_institution"].unique().tolist() if "evaluated_institution" in df_audit.columns else []
+          if all_institutions:
+            selected_audit_inst = st.selectbox("Filter Audit Logs by Institution", all_institutions, key="audit_inst_filter")
+            df_audit = df_audit[df_audit["evaluated_institution"] == selected_audit_inst]
+            
         st.dataframe(df_audit, use_container_width=True)
       elif isinstance(audit_data, dict) and "error" in audit_data:
         st.warning(audit_data["error"])
@@ -371,36 +387,53 @@ with tab4:
       audit_data = response.json()
       
       if isinstance(audit_data, list) and audit_data:
-        df_user = pd.DataFrame(audit_data)
+        df_all = pd.DataFrame(audit_data)
         
-        st.markdown(f"### 👤 Analytics for Your Organization: `{st.session_state['institution_name']}`")
+        # Determine dataset based on admin role and scope toggle
+        if st.session_state["is_admin"] and admin_view_mode == "Global (All Tenants)":
+          df_user = df_all
+          scope_label = "🌐 Global System-Wide (All Tenants Combined)"
+        else:
+          scope_label = f"Master Regulatory Authority" if (st.session_state["is_admin"] and admin_view_mode == "Single Institution") else st.session_state['institution_name']
+          if "evaluated_institution" in df_all.columns:
+            df_user = df_all[df_all["evaluated_institution"] == scope_label]
+            # Fallback if exact match string differs
+            if df_user.empty:
+              df_user = df_all
+          else:
+            df_user = df_all
+        
+        st.markdown(f"### 📊 Analytics View: `{scope_label}`")
         
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         user_records = len(df_user)
         decision_col = "decision" if "decision" in df_user.columns else ("decision_tier" if "decision_tier" in df_user.columns else None)
-        user_blocked = len(df_user[df_user[decision_col] == "BLOCK"]) if decision_col else 0
-        user_avg_risk = df_user["fraud_probability"].mean() * 100 if "fraud_probability" in df_user.columns else 0.0
-        user_volume = df_user["amount"].sum() if "amount" in df_user.columns else 0.0
+        user_blocked = len(df_user[df_user[decision_col] == "BLOCK"]) if decision_col and not df_user.empty else 0
+        user_avg_risk = df_user["fraud_probability"].mean() * 100 if "fraud_probability" in df_user.columns and not df_user.empty else 0.0
+        user_volume = df_user["amount"].sum() if "amount" in df_user.columns and not df_user.empty else 0.0
 
-        col_m1.metric("Your Records", f"{user_records:,}")
-        col_m2.metric("Your Blocked Threats", f"{user_blocked:,}")
-        col_m3.metric("Your Avg Risk Probability", f"{user_avg_risk:.2f}%")
-        col_m4.metric("Your Portfolio Value", f"${user_volume:,.2f}")
+        col_m1.metric("Total Records", f"{user_records:,}")
+        col_m2.metric("Blocked Threats", f"{user_blocked:,}")
+        col_m3.metric("Avg Risk Probability", f"{user_avg_risk:.2f}%")
+        col_m4.metric("Portfolio Value", f"${user_volume:,.2f}")
 
         ucount1, ucount2 = st.columns(2)
         with ucount1:
-          st.markdown("#### Your Decision Tier Breakdown")
+          st.markdown("#### Decision Tier Breakdown")
           if decision_col and not df_user.empty:
             st.bar_chart(df_user[decision_col].value_counts())
+          else:
+            st.info("No data available for breakdown.")
         with ucount2:
-          st.markdown("#### Your Risk Probability Trend")
-          if "fraud_probability" in df_user.columns:
+          st.markdown("#### Risk Probability Trend")
+          if "fraud_probability" in df_user.columns and not df_user.empty:
             st.line_chart(df_user["fraud_probability"].reset_index(drop=True))
+          else:
+            st.info("No data available for trend.")
 
         if st.session_state["is_admin"]:
           st.markdown("---")
-          st.markdown("### 🌐 Global System-Wide Fraud Detection Analytics (All Tenants)")
-          st.info("As Master Admin viewing global logs above.")
+          st.info(f"💡 **Master Admin Notice:** You are currently viewing `{admin_view_mode}` metrics. Use the sidebar toggle to switch between global multi-tenant visibility and individual institution drill-downs.")
 
       elif isinstance(audit_data, dict) and "error" in audit_data:
         st.warning(audit_data["error"])
