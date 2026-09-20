@@ -7,23 +7,21 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-from passlib.context import CryptContext
+import bcrypt
 import joblib
 import shap
 import pandas as pd
 
-# --- PASSWORD HASHING SETUP ---
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
+# --- PASSWORD HASHING SETUP (NATIVE BCRYPT) ---
 def get_password_hash(password: str) -> str:
-    if isinstance(password, str):
-        password = password.encode('utf-8')[:72].decode('utf-8', errors='ignore')
-    return pwd_context.hash(password)
+    # Encode and enforce 72-byte limit safely
+    pwd_bytes = password.encode('utf-8')[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    if isinstance(plain_password, str):
-        plain_password = plain_password.encode('utf-8')[:72].decode('utf-8', errors='ignore')
-    return pwd_context.verify(plain_password, hashed_password)
+    pwd_bytes = plain_password.encode('utf-8')[:72]
+    return bcrypt.checkpw(pwd_bytes, hashed_password.encode('utf-8'))
 
 # --- DATABASE SETUP (NEON POSTGRESQL) ---
 DATABASE_URL = os.getenv("DATABASE_URL")
