@@ -261,8 +261,8 @@ def evaluate_batch(payload: BatchTransactionPayload, user: UserModel = Depends(v
 def get_audit_logs(user: UserModel = Depends(verify_user_by_api_key), db: Session = Depends(get_db)):
     try:
         if user.is_admin:
-            # Master Admin sees ALL logs across every tenant globally
-            logs = db.query(AuditLogModel).order_by(AuditLogModel.id.desc()).limit(200).all()
+            # Master Admin sees ALL logs across every tenant globally without hard limit restrictions
+            logs = db.query(AuditLogModel).order_by(AuditLogModel.id.desc()).all()
         else:
             # Standard users see strictly their own institution's data
             logs = db.query(AuditLogModel).filter(
