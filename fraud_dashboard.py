@@ -14,8 +14,8 @@ st.set_page_config(
 BACKEND_URL = "https://fraud-detection-engine-v5wj.onrender.com"
 
 # --- OAUTH CONFIGURATION ---
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID")
-REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8501")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", st.secrets.get("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID"))
+REDIRECT_URI = os.getenv("REDIRECT_URI", st.secrets.get("REDIRECT_URI", "https://fraud-detection-engine-eo9csc49cqkfpvm6ygvsqy.streamlit.app/"))
 
 # --- SESSION STATE INITIALIZATION ---
 if "authenticated" not in st.session_state:
