@@ -1,0 +1,30 @@
+cd D:\fraud-engine
+git init
+git add .
+git commit -m "Initial commit: Institutional Real-Time Fraud Detection Engine"
+git remote add origin https://github.com/soumyasekhar1002-cmd/fraud-detection-engine.git
+git branch -M main
+git push -u origin main
+
+
+
+git config user.name "Soumya Sekhar Samanta"
+git config user.email "SoumyaSekhar1002@gmail.com"
+
+[https://fraud-detection-engine-v5wj.onrender.com]
+
+(https://fraud-detection-engine-v5wj.onrender.com)
+
+https://fraud-detection-engine-v5wj.onrender.com/v1/evaluate-fraud
+
+
+postgresql://neondb_owner:npg_0lIFgbmw5WGN@ep-mute-pine-b34ro3ki-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+
+Pre-Configured Admin Credentials for You:
+Admin Email: soumya.admin@fraudengine.com
+
+Password: Admin@12345
+
+Role/Institution: System Administrator (Global Oversight)
+
+Master API Key: bank_alpha_secret_key_991
