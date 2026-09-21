@@ -114,13 +114,12 @@ if not st.session_state["authenticated"]:
                                 try:
                                     err_detail = response.json().get("detail", "Invalid credentials or unverified email.")
                                 except Exception:
-                                    err_detail = f"Server Error [{response.status_code}]: Backend is waking up or temporarily unavailable."
+                                    err_detail = f"Server Error [{response.status_code}]"
                                 st.error(err_detail)
                         except Exception as e:
-                            st.error(f"Connection failed: Could not reach backend server. Error: {e}")
+                            st.error(f"Connection failed: {e}")
             
             st.markdown("<p style='text-align: center; color: gray; font-size: 0.85em;'>— Or continue with Enterprise SSO —</p>", unsafe_allow_html=True)
-            
             google_auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={GOOGLE_CLIENT_ID}&redirect_uri={REDIRECT_URI}?provider=google&response_type=code&scope=email%20profile"
             st.markdown(f'''
                 <a href="{google_auth_url}" target="_self" style="text-decoration:none;">
@@ -152,11 +151,7 @@ if not st.session_state["authenticated"]:
                                 if "verification_token_demo" in data:
                                     st.info(f"Verification Token (Copy this for testing): `{data['verification_token_demo']}`")
                             else:
-                                try:
-                                    err_detail = response.json().get("detail", "Registration failed.")
-                                except Exception:
-                                    err_detail = f"Server Error [{response.status_code}]"
-                                st.error(err_detail)
+                                st.error("Registration failed.")
                         except Exception as e:
                             st.error(f"Connection failed: {e}")
 
@@ -172,11 +167,7 @@ if not st.session_state["authenticated"]:
                         if res.status_code == 200:
                             st.success(res.json()["message"])
                         else:
-                            try:
-                                err_detail = res.json().get("detail", "Verification failed.")
-                            except Exception:
-                                err_detail = f"Server Error [{res.status_code}]"
-                            st.error(err_detail)
+                            st.error("Verification failed.")
                     except Exception as e:
                         st.error(f"Error: {e}")
 
@@ -211,11 +202,7 @@ if not st.session_state["authenticated"]:
                         if res.status_code == 200:
                             st.success(res.json()["message"])
                         else:
-                            try:
-                                err_detail = res.json().get("detail", "Password reset failed.")
-                            except Exception:
-                                err_detail = f"Server Error [{res.status_code}]"
-                            st.error(err_detail)
+                            st.error("Password reset failed.")
                     except Exception as e:
                         st.error(f"Error: {e}")
 
@@ -243,14 +230,20 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🛡️ Navigation Menu")
     
+    nav_options = [
+        "📊 Dashboard & Overview",
+        "🚀 Live Transaction Scoring",
+        "📂 Batch CSV Evaluation",
+        "📊 Regulatory Audit Logs",
+        "📈 Analytics"
+    ]
+    
+    if st.session_state["is_admin"]:
+        nav_options.append("👥 User Management")
+
     selected_page = st.radio(
         "Select Portal View",
-        [
-            "🚀 Live Transaction Scoring",
-            "📂 Batch CSV Evaluation",
-            "📊 Regulatory Audit Logs",
-            "📈 Analytics"
-        ],
+        nav_options,
         label_visibility="collapsed"
     )
 
@@ -261,7 +254,7 @@ with st.sidebar:
     else:
         admin_view_mode = "Single Institution"
 
-# --- MAIN CONTENT AREA ---
+# --- MAIN CONTENT HEADER ---
 role_badge = "👑 [MASTER ADMIN]" if st.session_state["is_admin"] else "👤 [ANALYST]"
 st.title("🛡️ Institutional Real-Time Fraud Detection Portal")
 st.markdown(f"Enterprise risk scoring and audit gateway. | **Signed in as:** `{st.session_state['user_email']}` {role_badge} ({st.session_state['institution_name']})")
@@ -270,7 +263,67 @@ st.markdown("---")
 api_endpoint = f"{BACKEND_URL}/v1/evaluate-fraud"
 institution_api_key = st.session_state["api_key"]
 
-if selected_page == "🚀 Live Transaction Scoring":
+if selected_page == "📊 Dashboard & Overview":
+    st.subheader("Comprehensive Executive Risk Analytics & Dashboard")
+    if st.button("Refresh Dashboard", key="btn_dash_refresh"):
+        st.rerun()
+
+    try:
+        audit_endpoint = api_endpoint.replace("/evaluate-fraud", "/audit-logs")
+        headers = {"x-api-key": institution_api_key}
+        response = requests.get(audit_endpoint, headers=headers)
+
+        if response.status_code == 200:
+            audit_data = response.json()
+            if isinstance(audit_data, list) and audit_data:
+                df_all = pd.DataFrame(audit_data)
+                if st.session_state["is_admin"] and admin_view_mode == "Global (All Tenants)":
+                    df_user = df_all
+                    scope_label = "🌐 Global System-Wide (All Tenants)"
+                else:
+                    scope_label = st.session_state['institution_name']
+                    if "evaluated_institution" in df_all.columns:
+                        df_user = df_all[df_all["evaluated_institution"] == scope_label]
+                        if df_user.empty:
+                            df_user = df_all
+                    else:
+                        df_user = df_all
+                
+                st.markdown(f"### 📊 Dashboard View: `{scope_label}`")
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                user_records = len(df_user)
+                user_blocked = len(df_user[df_user["decision"] == "BLOCK"]) if "decision" in df_user.columns and not df_user.empty else 0
+                user_avg_risk = df_user["fraud_probability"].mean() * 100 if "fraud_probability" in df_user.columns and not df_user.empty else 0.0
+                user_volume = df_user["amount"].sum() if "amount" in df_user.columns and not df_user.empty else 0.0
+
+                col_m1.metric("Total Records", f"{user_records:,}")
+                col_m2.metric("Blocked Threats", f"{user_blocked:,}")
+                col_m3.metric("Avg Risk Probability", f"{user_avg_risk:.2f}%")
+                col_m4.metric("Portfolio Value", f"${user_volume:,.2f}")
+
+                st.markdown("---")
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    st.markdown("#### Decision Tier Breakdown")
+                    if "decision" in df_user.columns:
+                        decision_counts = df_user["decision"].value_counts()
+                        st.bar_chart(decision_counts)
+                    else:
+                        st.info("No decision metrics available.")
+                with col_c2:
+                    st.markdown("#### Risk Probability Trend")
+                    if "fraud_probability" in df_user.columns:
+                        st.line_chart(df_user["fraud_probability"] * 100)
+                    else:
+                        st.info("No probability trends available.")
+            else:
+                st.info("No records found in audit logs for dashboard.")
+        else:
+            st.error(f"API Error [{response.status_code}]")
+    except Exception as e:
+        st.warning(f"Could not connect to backend: {e}")
+
+elif selected_page == "🚀 Live Transaction Scoring":
     st.subheader("Single Transaction Risk Evaluation Form")
     col1, col2 = st.columns(2)
     with col1:
@@ -338,7 +391,6 @@ elif selected_page == "📂 Batch CSV Evaluation":
             headers = {"x-api-key": institution_api_key, "Content-Type": "application/json"}
             all_evaluations = []
             total_processed_count = 0
-            failed_chunks = 0
             uploaded_file.seek(0)
 
             try:
@@ -358,10 +410,8 @@ elif selected_page == "📂 Batch CSV Evaluation":
                             evaluations = res_data.get("evaluations", [])
                             all_evaluations.extend(evaluations)
                             total_processed_count += res_data.get("total_processed", len(evaluations))
-                        else:
-                            failed_chunks += 1
                     except Exception:
-                        failed_chunks += 1
+                        pass
                     progress_bar.progress((i + 1) / total_chunks)
 
                 status_text.text("Batch processing complete!")
@@ -415,32 +465,63 @@ elif selected_page == "📈 Analytics":
             audit_data = response.json()
             if isinstance(audit_data, list) and audit_data:
                 df_all = pd.DataFrame(audit_data)
-                if st.session_state["is_admin"] and admin_view_mode == "Global (All Tenants)":
-                    df_user = df_all
-                    scope_label = "🌐 Global System-Wide (All Tenants)"
-                else:
-                    scope_label = st.session_state['institution_name']
-                    if "evaluated_institution" in df_all.columns:
-                        df_user = df_all[df_all["evaluated_institution"] == scope_label]
-                        if df_user.empty:
-                            df_user = df_all
-                    else:
+                scope_label = st.session_state['institution_name']
+                if "evaluated_institution" in df_all.columns:
+                    df_user = df_all[df_all["evaluated_institution"] == scope_label]
+                    if df_user.empty:
                         df_user = df_all
+                else:
+                    df_user = df_all
                 
-                st.markdown(f"### 📊 Analytics View: `{scope_label}`")
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                user_records = len(df_user)
-                user_blocked = len(df_user[df_user["decision"] == "BLOCK"]) if "decision" in df_user.columns and not df_user.empty else 0
-                user_avg_risk = df_user["fraud_probability"].mean() * 100 if "fraud_probability" in df_user.columns and not df_user.empty else 0.0
-                user_volume = df_user["amount"].sum() if "amount" in df_user.columns and not df_user.empty else 0.0
-
-                col_m1.metric("Total Records", f"{user_records:,}")
-                col_m2.metric("Blocked Threats", f"{user_blocked:,}")
-                col_m3.metric("Avg Risk Probability", f"{user_avg_risk:.2f}%")
-                col_m4.metric("Portfolio Value", f"${user_volume:,.2f}")
+                col_m1.metric("Total Records", f"{len(df_user):,}")
+                col_m2.metric("Blocked Threats", f"{len(df_user[df_user['decision'] == 'BLOCK']):,}" if 'decision' in df_user.columns else "0")
+                col_m3.metric("Avg Risk Probability", f"{(df_user['fraud_probability'].mean() * 100):.2f}%" if 'fraud_probability' in df_user.columns else "0.0%")
+                col_m4.metric("Portfolio Value", f"${df_user['amount'].sum():,.2f}" if 'amount' in df_user.columns else "$0.00")
             else:
-                st.info("No records found.")
+                st.info("No analytics data available.")
         else:
             st.error(f"API Error [{response.status_code}]")
     except Exception as e:
         st.warning(f"Could not connect: {e}")
+
+elif selected_page == "👥 User Management":
+    st.subheader("👥 User Account Verification & Management")
+    st.markdown("Manage and activate registered user accounts directly from the application.")
+    
+    if st.button("Refresh User Directory", key="btn_users_refresh"):
+        st.rerun()
+
+    try:
+        users_endpoint = f"{BACKEND_URL}/admin/users"
+        headers = {"x-api-key": institution_api_key}
+        res = requests.get(users_endpoint, headers=headers)
+        
+        if res.status_code == 200:
+            users_list = res.json()
+            if users_list:
+                df_users = pd.DataFrame(users_list)
+                st.dataframe(df_users, use_container_width=True)
+                
+                st.markdown("#### ⚡ Quick Account Activation")
+                with st.form("activate_user_form"):
+                    target_email = st.text_input("Enter User Email to Activate/Verify")
+                    submit_activate = st.form_submit_button("Activate & Verify User Profile", type="primary")
+                    
+                    if submit_activate:
+                        if not target_email:
+                            st.warning("Please enter a valid email address.")
+                        else:
+                            act_res = requests.post(f"{BACKEND_URL}/admin/verify-user?email={target_email}", headers=headers)
+                            if act_res.status_code == 200:
+                                st.success(f"User `{target_email}` has been successfully verified and activated!")
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.error(f"Failed to activate user: {act_res.text}")
+            else:
+                st.info("No registered users found.")
+        else:
+            st.info("User management endpoint is initializing or awaiting backend route support. You can also verify users directly via database SQL: `UPDATE users SET is_verified = TRUE WHERE email = '...';`")
+    except Exception as e:
+        st.warning(f"Could not fetch user directory: {e}")
