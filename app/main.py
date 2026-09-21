@@ -3,7 +3,7 @@ import uuid
 import datetime
 from typing import List, Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -25,7 +25,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     pwd_bytes = plain_password.encode('utf-8')[:72]
     return bcrypt.checkpw(pwd_bytes, hashed_password.encode('utf-8'))
 
-# --- DATABASE SETUP (NEON POSTGRESQL) ---
+# --- DATABASE SETUP (NEON POSTGRESQL / SQLITE) ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./artifacts/institutional_fraud_audit.db"
@@ -37,7 +37,7 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- SQLALCHEMY MODELS (WITH VERIFICATION & RESET FIELDS) ---
+# --- UPDATED SQLALCHEMY MODELS ---
 class UserModel(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -47,6 +47,9 @@ class UserModel(Base):
     api_key = Column(String(255), unique=True, index=True, nullable=False)
     is_admin = Column(Boolean, default=False)
     is_verified = Column(Boolean, default=False)
+    status = Column(String(50), default="ACTIVE") # ACTIVE, DEACTIVATED, SUSPENDED_TEMPORARY, PENDING
+    suspension_until = Column(DateTime, nullable=True)
+    role = Column(String(50), default="analyst") # admin, analyst, auditor
     verification_token = Column(String(255), nullable=True)
     reset_token = Column(String(255), nullable=True)
 
@@ -75,8 +78,8 @@ def get_db():
 # --- FASTAPI APP INITIALIZATION ---
 app = FastAPI(
     title="Institutional Real-Time Fraud Detection Engine",
-    version="2.4.0",
-    description="Multi-tenant core engine featuring real Google OAuth, email verification, and password recovery."
+    version="2.5.0",
+    description="Multi-tenant core engine featuring advanced user lifecycle management."
 )
 
 try:
@@ -96,15 +99,24 @@ class LoginSchema(BaseModel):
     email: str
     password: str
 
+class BulkUserActionRequest(BaseModel):
+    emails: List[EmailStr]
+    action: str  # "activate", "deactivate", "suspend"
+    suspension_hours: Optional[int] = 24
+
+class UserUpdateRoleRequest(BaseModel):
+    email: EmailStr
+    new_role: str  # "admin", "analyst", "auditor"
+
 class TransactionPayload(BaseModel):
-    transaction_id: str = Field(..., json_schema_extra={"example": "TXN_070038"})
-    cardholder_id: str = Field(..., json_schema_extra={"example": "USER_4392"})
-    amount: float = Field(..., gt=0, json_schema_extra={"example": 500000.00})
-    distance_from_home: float = Field(..., ge=0, json_schema_extra={"example": 12.50})
-    velocity_1h: int = Field(..., ge=0, json_schema_extra={"example": 1})
-    velocity_24h: int = Field(..., ge=0, json_schema_extra={"example": 3})
-    is_international: int = Field(..., ge=0, le=1, json_schema_extra={"example": 0})
-    merchant_category: Optional[str] = Field("Retail", json_schema_extra={"example": "Electronics"})
+    transaction_id: str
+    cardholder_id: str
+    amount: float
+    distance_from_home: float
+    velocity_1h: int
+    velocity_24h: int
+    is_international: int
+    merchant_category: Optional[str] = "Retail"
 
 class BatchTransactionPayload(BaseModel):
     transactions: List[TransactionPayload]
@@ -116,6 +128,25 @@ def verify_user_by_api_key(x_api_key: Optional[str] = Header(None), db: Session 
     user = db.query(UserModel).filter(UserModel.api_key == x_api_key).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid institutional API key.")
+    
+    # Check suspension expiry
+    if user.status == "SUSPENDED_TEMPORARY" and user.suspension_until:
+        if datetime.datetime.utcnow() < user.suspension_until:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is temporarily suspended.")
+        else:
+            user.status = "ACTIVE"
+            user.suspension_until = None
+            db.commit()
+            
+    if user.status == "DEACTIVATED":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account has been deactivated by an administrator.")
+        
+    return user
+
+def verify_master_admin(x_api_key: Optional[str] = Header(None), db: Session = Depends(get_db)):
+    user = verify_user_by_api_key(x_api_key, db)
+    if not user.is_admin and user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Master Admin privileges required.")
     return user
 
 # --- AUTH & ACCOUNT ENDPOINTS ---
@@ -136,6 +167,8 @@ def register_user(payload: SignupSchema, db: Session = Depends(get_db)):
         api_key=unique_key,
         is_admin=False,
         is_verified=False,
+        status="PENDING",
+        role="analyst",
         verification_token=ver_token
     )
     db.add(new_user)
@@ -145,7 +178,7 @@ def register_user(payload: SignupSchema, db: Session = Depends(get_db)):
         "message": "Account created successfully! Please verify your email.",
         "email": payload.email,
         "api_key": unique_key,
-        "verification_token_demo": ver_token # Returned so you can test email verification instantly
+        "verification_token_demo": ver_token
     }
 
 @app.post("/verify-email")
@@ -155,34 +188,10 @@ def verify_email(token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid or expired verification token.")
     
     user.is_verified = True
+    user.status = "ACTIVE"
     user.verification_token = None
     db.commit()
     return {"message": "Email successfully verified! You can now sign in."}
-
-@app.post("/forgot-password")
-def forgot_password(email: str, db: Session = Depends(get_db)):
-    user = db.query(UserModel).filter(UserModel.email == email).first()
-    if not user:
-        return {"message": "If the email exists, a password reset token has been generated."}
-    
-    reset_tok = uuid.uuid4().hex
-    user.reset_token = reset_tok
-    db.commit()
-    return {
-        "message": "Password reset instructions generated.",
-        "reset_token_demo": reset_tok # Returned for instant testing
-    }
-
-@app.post("/reset-password")
-def reset_password(token: str, new_password: str, db: Session = Depends(get_db)):
-    user = db.query(UserModel).filter(UserModel.reset_token == token).first()
-    if not user:
-        raise HTTPException(status_code=400, detail="Invalid or expired password reset token.")
-    
-    user.password_hash = get_password_hash(new_password)
-    user.reset_token = None
-    db.commit()
-    return {"message": "Password updated successfully. You can now sign in."}
 
 @app.post("/login")
 def login_user(payload: LoginSchema, db: Session = Depends(get_db)):
@@ -190,71 +199,74 @@ def login_user(payload: LoginSchema, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
+    if user.status == "DEACTIVATED":
+        raise HTTPException(status_code=403, detail="Account is deactivated.")
+    if user.status == "SUSPENDED_TEMPORARY" and user.suspension_until and datetime.datetime.utcnow() < user.suspension_until:
+        raise HTTPException(status_code=403, detail=f"Account temporarily suspended until {user.suspension_until}.")
     if not user.is_verified:
-        raise HTTPException(status_code=403, detail="Email not verified. Please verify your account before logging in.")
+        raise HTTPException(status_code=403, detail="Email not verified.")
     
     return {
         "email": user.email,
         "institution_name": user.institution_name,
         "api_key": user.api_key,
-        "is_admin": user.is_admin
+        "is_admin": user.is_admin or user.role == "admin"
     }
 
-@app.post("/auth/google")
-async def google_auth_callback(code: str, db: Session = Depends(get_db)):
-    GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID")
-    GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "YOUR_GOOGLE_CLIENT_SECRET")
-    REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8501")
+# --- MASTER ADMIN USER MANAGEMENT ENDPOINTS ---
+@app.get("/admin/users-detailed")
+def get_all_users_detailed(admin_user: UserModel = Depends(verify_master_admin), db: Session = Depends(get_db)):
+    users = db.query(UserModel).all()
+    results = []
+    for u in users:
+        results.append({
+            "id": u.id,
+            "email": u.email,
+            "institution_name": u.institution_name,
+            "role": u.role,
+            "is_verified": u.is_verified,
+            "status": u.status,
+            "suspension_until": str(u.suspension_until) if u.suspension_until else None,
+            "is_admin": u.is_admin
+        })
+    return results
 
-    token_url = "https://oauth2.googleapis.com/token"
-    data = {
-        "code": code,
-        "client_id": GOOGLE_CLIENT_ID,
-        "client_secret": GOOGLE_CLIENT_SECRET,
-        "redirect_uri": REDIRECT_URI,
-        "grant_type": "authorization_code"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        token_res = await client.post(token_url, data=data)
-        if token_res.status_code != 200:
-            raise HTTPException(status_code=400, detail=f"Failed to authenticate with Google: {token_res.text}")
+@app.post("/admin/user-lifecycle")
+def modify_user_lifecycle(payload: BulkUserActionRequest, admin_user: UserModel = Depends(verify_master_admin), db: Session = Depends(get_db)):
+    results = []
+    for email in payload.emails:
+        user = db.query(UserModel).filter(UserModel.email == email).first()
+        if not user:
+            continue
         
-        token_data = token_res.json()
-        access_token = token_data.get("access_token")
+        if payload.action == "activate":
+            user.is_verified = True
+            user.status = "ACTIVE"
+            user.suspension_until = None
+            results.append({"email": email, "status": "ACTIVATED"})
+        elif payload.action == "deactivate":
+            user.status = "DEACTIVATED"
+            results.append({"email": email, "status": "DEACTIVATED"})
+        elif payload.action == "suspend":
+            expiry = datetime.datetime.utcnow() + datetime.timedelta(hours=payload.suspension_hours)
+            user.status = "SUSPENDED_TEMPORARY"
+            user.suspension_until = expiry
+            results.append({"email": email, "status": "SUSPENDED_TEMPORARY", "until": str(expiry)})
+            
+    db.commit()
+    return {"message": "Lifecycle action processed successfully", "results": results}
 
-        user_info_res = await client.get(
-            "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"}
-        )
-        if user_info_res.status_code != 200:
-            raise HTTPException(status_code=400, detail="Failed to fetch Google user profile.")
-        
-        g_user = user_info_res.json()
-        email = g_user.get("email")
-        name = g_user.get("name", "Google User")
-
-    user = db.query(UserModel).filter(UserModel.email == email).first()
+@app.post("/admin/update-role")
+def update_user_role(payload: UserUpdateRoleRequest, admin_user: UserModel = Depends(verify_master_admin), db: Session = Depends(get_db)):
+    user = db.query(UserModel).filter(UserModel.email == payload.email).first()
     if not user:
-        unique_key = f"key_{uuid.uuid4().hex[:12]}"
-        user = UserModel(
-            email=email,
-            password_hash=None,
-            institution_name=f"{name}'s Institution",
-            api_key=unique_key,
-            is_admin=False,
-            is_verified=True
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    return {
-        "email": user.email,
-        "institution_name": user.institution_name,
-        "api_key": user.api_key,
-        "is_admin": user.is_admin
-    }
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.role = payload.new_role
+    if payload.new_role == "admin":
+        user.is_admin = True
+    db.commit()
+    return {"message": f"Successfully updated role for {payload.email} to {payload.new_role}"}
 
 # --- CORE EVALUATION & AUDIT LOGIC ---
 def process_risk_and_explanation(txn: TransactionPayload):
@@ -299,7 +311,6 @@ def log_audit_decision(user: UserModel, txn: TransactionPayload, prob: float, de
         db.commit()
     except Exception as e:
         db.rollback()
-        print(f"Audit logging failed: {e}")
 
 @app.post("/v1/evaluate-fraud")
 def evaluate_single(payload: TransactionPayload, user: UserModel = Depends(verify_user_by_api_key), db: Session = Depends(get_db)):
@@ -335,7 +346,7 @@ def evaluate_batch(payload: BatchTransactionPayload, user: UserModel = Depends(v
 @app.get("/v1/audit-logs")
 def get_audit_logs(user: UserModel = Depends(verify_user_by_api_key), db: Session = Depends(get_db)):
     try:
-        if user.is_admin:
+        if user.is_admin or user.role == "admin":
             logs = db.query(AuditLogModel).order_by(AuditLogModel.id.desc()).all()
         else:
             logs = db.query(AuditLogModel).filter(AuditLogModel.evaluated_institution == user.institution_name).order_by(AuditLogModel.id.desc()).all()

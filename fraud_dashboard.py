@@ -189,22 +189,6 @@ if not st.session_state["authenticated"]:
                             st.error("Request failed.")
                     except Exception as e:
                         st.error(f"Error: {e}")
-            
-            with st.form("reset_form"):
-                st.markdown("### Complete Password Reset")
-                r_token = st.text_input("Reset Token")
-                r_pass = st.text_input("New Password", type="password")
-                submit_reset = st.form_submit_button("Update Password", use_container_width=True)
-                
-                if submit_reset:
-                    try:
-                        res = requests.post(f"{BACKEND_URL}/reset-password?token={r_token}&new_password={r_pass}")
-                        if res.status_code == 200:
-                            st.success(res.json()["message"])
-                        else:
-                            st.error("Password reset failed.")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
 
     st.stop()
 
@@ -212,7 +196,6 @@ if not st.session_state["authenticated"]:
 
 # --- SIDEBAR NAVIGATION & PROFILE POPOVER ---
 with st.sidebar:
-    # User Profile Popover Button
     with st.popover("👤 User Profile", use_container_width=True):
         st.markdown(f"**User:** `{st.session_state['user_email']}`")
         role_label = "Master Administrator" if st.session_state["is_admin"] else "Standard Analyst"
@@ -486,14 +469,16 @@ elif selected_page == "📈 Analytics":
         st.warning(f"Could not connect: {e}")
 
 elif selected_page == "👥 User Management":
-    st.subheader("👥 User Account Verification & Management")
-    st.markdown("Manage and activate registered user accounts directly from the application.")
+    st.subheader("🏢 Enterprise User Management & Lifecycle Console")
+    st.markdown("Manage system access, execute bulk onboarding approvals, enforce temporary suspensions, and control role-based permissions.")
     
-    if st.button("Refresh User Directory", key="btn_users_refresh"):
-        st.rerun()
-
+    col_ref, col_metrics = st.columns([1, 3])
+    with col_ref:
+        if st.button("🔄 Refresh Directory", use_container_width=True):
+            st.rerun()
+            
     try:
-        users_endpoint = f"{BACKEND_URL}/admin/users"
+        users_endpoint = f"{BACKEND_URL}/admin/users-detailed"
         headers = {"x-api-key": institution_api_key}
         res = requests.get(users_endpoint, headers=headers)
         
@@ -501,27 +486,106 @@ elif selected_page == "👥 User Management":
             users_list = res.json()
             if users_list:
                 df_users = pd.DataFrame(users_list)
+                
+                total_u = len(df_users)
+                active_u = len(df_users[df_users.get("status", "ACTIVE") == "ACTIVE"])
+                suspended_u = len(df_users[df_users.get("status", "ACTIVE").str.contains("SUSPENDED", na=False)])
+                
+                col_m1, col_m2, col_m3 = st.columns(3)
+                col_m1.metric("Total Registered Users", total_u)
+                col_m2.metric("Active & Verified", active_u)
+                col_m3.metric("Suspended / Inactive", suspended_u)
+                
+                st.markdown("---")
+                st.markdown("#### 📋 User Directory & Selection")
+                
+                selected_emails = st.multiselect(
+                    "Select Users for Bulk Actions", 
+                    options=df_users["email"].tolist()
+                )
+                
                 st.dataframe(df_users, use_container_width=True)
                 
-                st.markdown("#### ⚡ Quick Account Activation")
-                with st.form("activate_user_form"):
-                    target_email = st.text_input("Enter User Email to Activate/Verify")
-                    submit_activate = st.form_submit_button("Activate & Verify User Profile", type="primary")
+                st.markdown("---")
+                st.markdown("#### ⚡ Lifecycle Management Operations")
+                
+                tab_bulk, tab_single, tab_role = st.tabs(["📦 Bulk Actions", "👤 Single User Control", "🛡️ Role Assignment"])
+                
+                with tab_bulk:
+                    st.markdown("Apply state changes across all currently selected users in the multi-select dropdown above.")
+                    b_col1, b_col2, b_col3 = st.columns(3)
                     
-                    if submit_activate:
-                        if not target_email:
-                            st.warning("Please enter a valid email address.")
-                        else:
-                            act_res = requests.post(f"{BACKEND_URL}/admin/verify-user?email={target_email}", headers=headers)
-                            if act_res.status_code == 200:
-                                st.success(f"User `{target_email}` has been successfully verified and activated!")
-                                time.sleep(0.5)
-                                st.rerun()
+                    with b_col1:
+                        if st.button("✅ Bulk Activate Selected", type="primary", use_container_width=True):
+                            if selected_emails:
+                                payload = {"emails": selected_emails, "action": "activate"}
+                                r = requests.post(f"{BACKEND_URL}/admin/user-lifecycle", json=payload, headers=headers)
+                                if r.status_code == 200:
+                                    st.success("Selected users activated successfully!")
+                                    time.sleep(0.5); st.rerun()
                             else:
-                                st.error(f"Failed to activate user: {act_res.text}")
+                                st.warning("Please select users from the multi-select above.")
+                                
+                    with b_col2:
+                        if st.button("⏳ Bulk Temporary Suspend (24h)", use_container_width=True):
+                            if selected_emails:
+                                payload = {"emails": selected_emails, "action": "suspend", "suspension_hours": 24}
+                                r = requests.post(f"{BACKEND_URL}/admin/user-lifecycle", json=payload, headers=headers)
+                                if r.status_code == 200:
+                                    st.warning("Selected users placed on temporary suspension.")
+                                    time.sleep(0.5); st.rerun()
+                            else:
+                                st.warning("Please select users from the multi-select above.")
+                                
+                    with b_col3:
+                        if st.button("🛑 Bulk Deactivate / Revoke", type="secondary", use_container_width=True):
+                            if selected_emails:
+                                payload = {"emails": selected_emails, "action": "deactivate"}
+                                r = requests.post(f"{BACKEND_URL}/admin/user-lifecycle", json=payload, headers=headers)
+                                if r.status_code == 200:
+                                    st.error("Selected users deactivated.")
+                                    time.sleep(0.5); st.rerun()
+                            else:
+                                st.warning("Please select users from the multi-select above.")
+
+                with tab_single:
+                    target_single_email = st.selectbox("Select Target User", options=df_users["email"].tolist(), key="single_target_user")
+                    s_col1, s_col2, s_col3 = st.columns(3)
+                    
+                    if s_col1.button("✅ Activate Single User", use_container_width=True):
+                        payload = {"emails": [target_single_email], "action": "activate"}
+                        requests.post(f"{BACKEND_URL}/admin/user-lifecycle", json=payload, headers=headers)
+                        st.success(f"Activated {target_single_email}")
+                        time.sleep(0.5); st.rerun()
+                        
+                    suspend_hours_input = s_col2.number_input("Suspension Duration (Hours)", min_value=1, value=24)
+                    if s_col2.button("⏳ Temp Suspend User", use_container_width=True):
+                        payload = {"emails": [target_single_email], "action": "suspend", "suspension_hours": suspend_hours_input}
+                        requests.post(f"{BACKEND_URL}/admin/user-lifecycle", json=payload, headers=headers)
+                        st.warning(f"Suspended {target_single_email} for {suspend_hours_input}h")
+                        time.sleep(0.5); st.rerun()
+                        
+                    if s_col3.button("🛑 Deactivate User", use_container_width=True):
+                        payload = {"emails": [target_single_email], "action": "deactivate"}
+                        requests.post(f"{BACKEND_URL}/admin/user-lifecycle", json=payload, headers=headers)
+                        st.error(f"Deactivated {target_single_email}")
+                        time.sleep(0.5); st.rerun()
+
+                with tab_role:
+                    st.markdown("Change permission levels and access tiers.")
+                    role_target_email = st.selectbox("Select User for Role Update", options=df_users["email"].tolist(), key="role_target_user")
+                    assigned_new_role = st.selectbox("Select New Role", ["Standard Analyst", "Regulatory Auditor", "Master Administrator"])
+                    
+                    if st.button("Update User Role Permissions", type="primary"):
+                        role_code = "admin" if "Admin" in assigned_new_role else ("auditor" if "Auditor" in assigned_new_role else "analyst")
+                        payload = {"email": role_target_email, "new_role": role_code}
+                        r = requests.post(f"{BACKEND_URL}/admin/update-role", json=payload, headers=headers)
+                        if r.status_code == 200:
+                            st.success(f"Role updated successfully for {role_target_email}!")
+                            time.sleep(0.5); st.rerun()
             else:
-                st.info("No registered users found.")
+                st.info("No registered users found in directory.")
         else:
-            st.info("User management endpoint is initializing or awaiting backend route support. You can also verify users directly via database SQL: `UPDATE users SET is_verified = TRUE WHERE email = '...';`")
+            st.warning("Awaiting backend route initialization for detailed user management endpoints.")
     except Exception as e:
-        st.warning(f"Could not fetch user directory: {e}")
+        st.warning(f"Could not load user management console: {e}")
